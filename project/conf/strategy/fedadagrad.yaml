@@ -1,7 +1,0 @@
----
-name: FedAdagrad
-
-init:
-  _target_: flwr.server.strategy.FedAdagrad
-  eta: 0.1
-  tau: 0.01

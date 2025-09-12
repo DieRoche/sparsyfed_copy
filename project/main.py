@@ -22,6 +22,7 @@ from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 
 import wandb
+from config import get_config
 
 # Only import from the project root
 # Never do a relative import nor one that assumes a given folder structure
@@ -41,7 +42,6 @@ from project.utils.utils import (
     FileSystemManager,
     RayContextManager,
     seed_everything,
-    wandb_init,
 )
 
 
@@ -67,11 +67,7 @@ def main(cfg: DictConfig) -> None:
     # Print parsed config
     log(logging.INFO, OmegaConf.to_yaml(cfg))
 
-    wandb_config = OmegaConf.to_container(
-        cfg,
-        resolve=True,
-        throw_on_missing=True,
-    )
+    args = get_config()
 
     # Obtain the output dir from hydra
     original_hydra_dir = Path(
@@ -100,19 +96,15 @@ def main(cfg: DictConfig) -> None:
 
     working_dir.mkdir(parents=True, exist_ok=True)
 
-    # Wandb context manager
-    # controlls if wandb is initialised or not
-    # if not it returns a dummy run
-    with wandb_init(
-        cfg.use_wandb,
-        **cfg.wandb.setup,
+    # Initialize Weights & Biases
+    with wandb.init(
+        project="compression_FL",
+        config={k: v for k, v in vars(args).items()},
         settings=wandb.Settings(start_method="thread"),
-        config=wandb_config,
-    ) as run:
+    ):
         log(
             logging.INFO,
-            "Wandb run initialized with %s",
-            cfg.use_wandb,
+            "Wandb run initialized",
         )
 
         # Context managers for saving and cleaning up files
@@ -152,9 +144,8 @@ def main(cfg: DictConfig) -> None:
             )
 
             # New history that sends data to the wandb server
-            # only if use_wandb is True
-            # Minimizes communication to oncer-per-round
-            history = WandbHistory(cfg.use_wandb)
+            # Minimizes communication to once per round
+            history = WandbHistory()
 
             # All of these functions are determined by the cfg.task component
             # change model_and_data and train_structure
@@ -351,29 +342,28 @@ def main(cfg: DictConfig) -> None:
                     ensure_ascii=False,
                 )
 
-        # Sync the entire results dir to wandb if enabled
+        # Sync the entire results dir to wandb
         # Only once at the end of the simulation
-        if run is not None:
-            run.save(
-                str((results_dir / "*").resolve()),
-                str((results_dir).resolve()),
-                "now",
-            )
-            # Try to empty the wandb folder of old local runs
-            log(
-                logging.INFO,
-                subprocess.run(
-                    [
-                        "wandb",
-                        "sync",
-                        "--clean-old-hours",
-                        "24",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                ),
-            )
+        wandb.run.save(
+            str((results_dir / "*").resolve()),
+            str((results_dir).resolve()),
+            "now",
+        )
+        # Try to empty the wandb folder of old local runs
+        log(
+            logging.INFO,
+            subprocess.run(
+                [
+                    "wandb",
+                    "sync",
+                    "--clean-old-hours",
+                    "24",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            ),
+        )
 
 
 if __name__ == "__main__":

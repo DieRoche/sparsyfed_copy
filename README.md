@@ -59,10 +59,10 @@ poetry run python -m project.main --config-name=cifar_resnet18
 
 The default task should have created a folder in `sparsyfed/outputs`. This folder contains the results of the experiment.
 
-To log your experiments to Weights & Biases (wandb), log in to wandb and then enable it via the command:
+To log your experiments to Weights & Biases (wandb), log in to wandb and run:
 
 ```bash
-poetry run python -m project.main --config-name=cifar_resnet18 use_wandb=true
+poetry run python -m project.main --config-name=cifar_resnet18
 ```
 
 ### Dataset Preparation

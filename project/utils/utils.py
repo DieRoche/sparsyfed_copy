@@ -37,7 +37,7 @@ def obtain_device() -> torch.device:
 def lazy_wrapper(x: Callable) -> Callable[[], Any]:
     """Wrap a value in a function that returns the value.
 
-    For easy instantion through hydra.
+    For easy instantiation.
 
     Parameters
     ----------
@@ -57,7 +57,7 @@ def lazy_config_wrapper(
 ) -> Callable[[dict], Any]:
     """Wrap a value in a function that returns the value given a config.
 
-    For easy instantion through hydra.
+    For easy instantiation.
 
     Parameters
     ----------
@@ -346,7 +346,6 @@ class FileSystemManager:
         output_dir: Path,
         to_clean_once: list[str],
         to_save_once: list[str],
-        original_hydra_dir: Path,
         reuse_output_dir: bool,
         file_limit: int | None = None,
     ) -> None:
@@ -362,9 +361,6 @@ class FileSystemManager:
             The tokens to clean once.
         to_save_once : List[str]
             The tokens to save once.
-        original_hydra_dir : Path
-            The original hydra directory.
-            For copying the hydra directory to the working directory.
         reuse_output_dir : bool
             Whether to reuse the output directory.
         file_limit : Optional[int]
@@ -379,7 +375,6 @@ class FileSystemManager:
         self.working_dir = working_dir
         self.output_dir = output_dir
         self.to_save_once = to_save_once
-        self.original_hydra_dir = original_hydra_dir
         self.reuse_output_dir = reuse_output_dir
         self.checkpoint_index = get_checkpoint_index(
             self.output_dir,
@@ -437,33 +432,13 @@ class FileSystemManager:
         """Cleanup the files."""
         log(logging.INFO, f"Saving {self.to_save_once}")
 
-        # Copy the hydra directory to the working directory
-        # so that multiple runs can be ran
-        # in the same output directory and configs versioned
-        hydra_dir = self.working_dir / ".hydra"
-
-        shutil.copytree(
-            str(self.original_hydra_dir / ".hydra"),
-            str(object=hydra_dir),
-            dirs_exist_ok=True,
-        )
-
-        # Move main.log to the working directory
-        main_log = self.original_hydra_dir / "main.log"
-        shutil.copy2(
-            str(main_log),
-            str(self.working_dir / "main.log"),
-        )
         save_files(
             self.working_dir,
             self.output_dir,
             to_save=self.to_save_once,
             checkpoint_index=self.checkpoint_index,
         )
-        log(
-            logging.INFO,
-            f"Post-cleaning {self.to_clean_once}",
-        )
+        log(logging.INFO, f"Post-cleaning {self.to_clean_once}")
         cleanup(
             self.working_dir,
             to_clean=self.to_clean_once,

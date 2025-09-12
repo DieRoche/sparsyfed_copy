@@ -71,9 +71,8 @@ OnFitConfigFN = Callable[[int], dict]
 OnEvaluateConfigFN = OnFitConfigFN
 
 # Structures to define a complete task setup
-# They can be varied indendently to some extent
-# Allows us to take advantage of hydra without
-# losing static type checking
+# They can be varied independently to some extent
+# Keeps static type checking while using configuration files
 TrainStructure = tuple[TrainFunc, TestFunc, FedEvalGen]
 DataStructure = tuple[
     NetGen,

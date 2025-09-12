@@ -1,5 +1,5 @@
-"""The root of the project with the hydra entry point.
+"""Root of the project.
 
-All logic should flow through hydra. Type everything using interfaces and ABCs rather
+All logic should flow through the Python modules using interfaces and ABCs rather
 than concretions.
 """

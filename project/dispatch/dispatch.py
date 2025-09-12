@@ -1,7 +1,7 @@
-"""Dispatches the functionality of the task.
+"""Dispatch functionality for the selected task.
 
-This gives us the ability to dynamically choose functionality based on the hydra dict
-config without losing static type checking.
+This gives us the ability to dynamically choose functionality based on the configuration
+dictionary without losing static type checking.
 """
 
 from collections.abc import Callable
@@ -117,7 +117,7 @@ def dispatch_data(cfg: DictConfig) -> DataStructure:
 
 
 def dispatch_config(cfg: DictConfig) -> ConfigStructure:
-    """Dispatch the fit/eval config functions based on on the hydra config.
+    """Dispatch the fit/eval config functions based on the configuration.
 
     Functionality should be added to the dispatch.py
     file in the task folder.

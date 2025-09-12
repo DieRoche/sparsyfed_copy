@@ -13,7 +13,7 @@ def str2bool(v):
     raise argparse.ArgumentTypeError("Boolean value expected.")
 
 
-def get_config():
+def get_config() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Federated Averaging Experiments")
     parser.add_argument("--method", type=str, default="FEDQCLIP")
@@ -37,6 +37,6 @@ def get_config():
 
     parser.add_argument("--device", type=str, default="cuda")
 
-    args = parser.parse_args()
+    args, _ = parser.parse_known_args()
 
     return args

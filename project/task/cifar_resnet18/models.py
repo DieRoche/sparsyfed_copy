@@ -12,6 +12,7 @@ import torch.nn.functional as F
 
 from torch import nn
 from torchvision.models import resnet18
+from ResNet18 import ResNet18
 
 from project.task.utils.sparsyfed_modules import SparsyFedConv2D, SparsyFedLinear
 from project.task.utils.sparsyfed_no_act_modules import (
@@ -385,24 +386,12 @@ def get_network_generator_resnet_sparsyfed_no_act(
     return generated_net
 
 
-def get_resnet18(num_classes: int = 10) -> Callable[[dict], NetCifarResnet18]:
-    """Cifar Resnet18 network generatror."""
-    untrained_net: NetCifarResnet18 = NetCifarResnet18(num_classes=num_classes)
-    # untrained_net.load_state_dict(
-    #     generate_random_state_dict(untrained_net, seed=42, sparsity=0.9)
-    # )
+def get_resnet18(num_classes: int = 10) -> Callable[[dict], ResNet18]:
+    """Return a ResNet18 network generator using the root model."""
+    untrained_net: ResNet18 = ResNet18(num_classes=num_classes)
 
-    def generated_net(_config: dict) -> NetCifarResnet18:
+    def generated_net(_config: dict) -> ResNet18:
         return deepcopy(untrained_net)
-
-    def init_model(
-        module: nn.Module,
-    ) -> None:
-        init_weights(module)
-        for _, immediate_child_module in module.named_children():
-            init_model(immediate_child_module)
-
-    init_model(untrained_net)
 
     return generated_net
 

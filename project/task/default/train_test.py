@@ -6,7 +6,7 @@ from typing import cast
 
 import torch
 from flwr.common import NDArrays
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from torch import nn
 from torch.utils.data import DataLoader
 
@@ -29,14 +29,11 @@ class TrainConfig(BaseModel):
     mismatched to client.
     """
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     device: torch.device
     # epochs: int
     # learning_rate: float
-
-    class Config:
-        """Setting to allow any types, including library ones like torch.device."""
-
-        arbitrary_types_allowed = True
 
 
 def train(  # pylint: disable=too-many-arguments
@@ -85,12 +82,9 @@ class TestConfig(BaseModel):
     mismatched to client.
     """
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     device: torch.device
-
-    class Config:
-        """Setting to allow any types, including library ones like torch.device."""
-
-        arbitrary_types_allowed = True
 
 
 def test(

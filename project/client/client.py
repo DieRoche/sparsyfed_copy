@@ -7,7 +7,7 @@ from pathlib import Path
 
 import flwr as fl
 from flwr.common import NDArrays
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from torch import nn
 
 from project.fed.utils.utils import (
@@ -37,6 +37,8 @@ class ClientConfig(BaseModel):
     anything extra, use the extra field as a simple dict.
     """
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     # Instantiate model
     net_config: dict
     # Instantiate dataloader
@@ -45,11 +47,6 @@ class ClientConfig(BaseModel):
     run_config: dict
     # Additional params used like a Dict
     extra: dict
-
-    class Config:
-        """Setting to allow any types, including library ones like torch.device."""
-
-        arbitrary_types_allowed = True
 
 
 class Client(fl.client.NumPyClient):

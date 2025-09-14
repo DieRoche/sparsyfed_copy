@@ -119,7 +119,8 @@ class WandbServer(Server):
         total_upload_traffic = 0
         total_download_traffic = 0
 
-        for current_round in range(1, num_rounds + 1):
+        for round_idx in range(num_rounds):
+            current_round = round_idx + 1
             # Train model and replace previous global model
             # prendere un timer sulla fit
             timestamp = time.time()
@@ -237,7 +238,7 @@ class WandbServer(Server):
                 wandb.log(report, step=current_round)
 
             print(
-                f"Round {current_round}, Clients Acc: {acc_clients}, Server Acc: {acc_servers}"
+                f"Round {round_idx + 1}, Clients Acc: {acc_clients}, Server Acc: {acc_servers}"
             )
             cleanup_memory()
 
@@ -254,6 +255,5 @@ class WandbServer(Server):
 
 def cleanup_memory() -> None:
     """Empty CUDA cache if GPU is available."""
-
     if torch.cuda.is_available():
         torch.cuda.empty_cache()

@@ -5,12 +5,16 @@ import timeit
 from collections.abc import Callable
 from logging import INFO
 
-from flwr.common import Parameters
+import numpy as np
+import torch
+import wandb
+from flwr.common import Parameters, parameters_to_ndarrays
 from flwr.common.logger import log
 from flwr.server import Server
 from flwr.server.client_manager import ClientManager
 from flwr.server.history import History
 from flwr.server.strategy import Strategy
+from project.fed.utils.utils import tensor_dict_bytes
 
 
 class WandbServer(Server):
@@ -112,6 +116,8 @@ class WandbServer(Server):
         # Save initial parameters and files
         self.save_parameters_to_file(self.parameters)
         self.save_files_per_round(0)
+        total_upload_traffic = 0
+        total_download_traffic = 0
 
         for current_round in range(1, num_rounds + 1):
             # Train model and replace previous global model
@@ -123,6 +129,10 @@ class WandbServer(Server):
             )
             fit_round_time = time.time() - timestamp
 
+            participating_updates = []
+            fit_metrics: dict[str, float] = {}
+            parameters_prime = None
+
             if res_fit is not None:
                 (
                     parameters_prime,
@@ -131,7 +141,7 @@ class WandbServer(Server):
                 ) = res_fit  # fit_metrics_aggregated
                 if parameters_prime:
                     self.parameters = parameters_prime
-                    # try to check the parameters sparsity here
+                    participating_updates = [parameters_to_ndarrays(parameters_prime)]
 
                 history.add_metrics_distributed_fit(
                     server_round=current_round,
@@ -163,7 +173,6 @@ class WandbServer(Server):
                     server_round=current_round,
                     metrics=metrics_cen,
                 )
-
             # Evaluate model on a sample of available clients
             res_fed = self.evaluate_round(
                 server_round=current_round,
@@ -181,6 +190,56 @@ class WandbServer(Server):
                         server_round=current_round,
                         metrics=evaluate_metrics_fed,
                     )
+            else:
+                evaluate_metrics_fed = {}
+
+            acc_clients = fit_metrics.get("acc_clients", [])
+            cos_mean = fit_metrics.get("cos_mean", 0.0)
+            cos_std = fit_metrics.get("cos_std", 0.0)
+            training_loss_mean = fit_metrics.get("training_loss_mean", 0.0)
+            training_loss_std = fit_metrics.get("training_loss_std", 0.0)
+            acc = 0.0
+            if res_cen is not None:
+                acc = metrics_cen.get("test_accuracy", acc)
+            if evaluate_metrics_fed:
+                acc_clients = acc_clients or [
+                    evaluate_metrics_fed.get("test_accuracy", 0.0)
+                ]
+            acc_clients_mean = float(np.mean(acc_clients)) if acc_clients else 0.0
+            acc_clients_std = float(np.std(acc_clients)) if acc_clients else 0.0
+            acc_servers = [acc]
+            acc_servers_mean = float(np.mean(acc_servers))
+            acc_servers_std = float(np.std(acc_servers))
+
+            report: dict[str, float] = {
+                "cos_lowest": cos_mean - cos_std,
+                "cos_highest": cos_mean + cos_std,
+                "training_loss_lowest": training_loss_mean - training_loss_std,
+                "training_loss_highest": training_loss_mean + training_loss_std,
+                "acc_clients_lowest": acc_clients_mean - acc_clients_std,
+                "acc_clients_highest": acc_clients_mean + acc_clients_std,
+                "acc_servers_lowest": acc_servers_mean - acc_servers_std,
+                "acc_servers_highest": acc_servers_mean + acc_servers_std,
+            }
+
+            global_state = parameters_to_ndarrays(self.parameters)
+            download_traffic = tensor_dict_bytes(global_state)
+            upload_traffic = sum(
+                tensor_dict_bytes(update) for update in participating_updates
+            )
+            total_upload_traffic += upload_traffic
+            total_download_traffic += download_traffic
+            report["upload_traffic"] = upload_traffic
+            report["download_traffic"] = download_traffic
+            report["overall_traffic"] = total_upload_traffic + total_download_traffic
+
+            if self.history is not None and getattr(self.history, "use_wandb", False):
+                wandb.log(report, step=current_round)
+
+            print(
+                f"Round {current_round}, Clients Acc: {acc_clients}, Server Acc: {acc_servers}"
+            )
+            cleanup_memory()
 
             # Saver round parameters and files
             self.save_parameters_to_file(self.parameters)
@@ -191,3 +250,10 @@ class WandbServer(Server):
         elapsed = end_time - start_time
         log(INFO, "FL finished in %s", elapsed)
         return history
+
+
+def cleanup_memory() -> None:
+    """Empty CUDA cache if GPU is available."""
+
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()

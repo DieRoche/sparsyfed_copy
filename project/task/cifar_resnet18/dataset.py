@@ -3,7 +3,7 @@
 from pathlib import Path
 
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import ConcatDataset, DataLoader
 
 from project.task.default.dataset import (
     ClientDataloaderConfig as DefaultClientDataloaderConfig,
@@ -12,6 +12,8 @@ from project.task.default.dataset import (
     FedDataloaderConfig as DefaultFedDataloaderConfig,
 )
 from project.types.common import ClientDataloaderGen, FedDataloaderGen
+
+from data_utils import get_dataset
 
 
 # Use defaults for this very simple dataset
@@ -114,3 +116,30 @@ def get_dataloader_generators(
         )
 
     return get_client_dataloader, get_federated_dataloader
+
+
+def get_data_utils_generators(
+    args,
+) -> tuple[ClientDataloaderGen, FedDataloaderGen, int]:
+    """Return dataloader generators backed by ``data_utils.get_dataset``."""
+
+    client_data, test_data, n_classes, *_ = get_dataset(args)
+
+    def client_loader(
+        cid: str | int,
+        test: bool,
+        _config: dict,
+    ) -> DataLoader:
+        config: ClientDataloaderConfig = ClientDataloaderConfig(**_config)
+        dataset = test_data if test else client_data[int(cid)]
+        return DataLoader(dataset, batch_size=config.batch_size, shuffle=not test)
+
+    def fed_loader(
+        test: bool,
+        _config: dict,
+    ) -> DataLoader:
+        config: FedDataloaderConfig = FedDataloaderConfig(**_config)
+        dataset = test_data if test else ConcatDataset(client_data)
+        return DataLoader(dataset, batch_size=config.batch_size, shuffle=not test)
+
+    return client_loader, fed_loader, n_classes

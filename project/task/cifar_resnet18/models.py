@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 
 from torch import nn
-from torchvision.models import resnet18
+from ResNet18 import ResNet18 as BaseResNet18
 
 from project.task.utils.sparsyfed_modules import SparsyFedConv2D, SparsyFedLinear
 from project.task.utils.sparsyfed_no_act_modules import (
@@ -65,32 +65,16 @@ class Net(nn.Module):
         return x
 
 
-class NetCifarResnet18(nn.Module):
-    """A ResNet18 adapted to CIFAR10."""
+class NetCifarResnet18(BaseResNet18):
+    """ResNet18 network used by server and clients."""
 
     def __init__(
         self, num_classes: int, device: str = "cuda", groupnorm: bool = False
     ) -> None:
         """Initialize network."""
-        super().__init__()
+        super().__init__(num_classes=num_classes)
         self.num_classes = num_classes
         self.device = device
-        # As the LEAF people do
-        # self.net = resnet18(num_classes=10, norm_layer=lambda x: nn.GroupNorm(2, x))
-        self.net = resnet18(num_classes=self.num_classes)
-        # replace w/ smaller input layer
-        self.net.conv1 = nn.Conv2d(
-            3, 64, kernel_size=3, stride=1, padding=1, bias=False
-        )
-        nn.init.kaiming_normal_(
-            self.net.conv1.weight, mode="fan_out", nonlinearity="relu"
-        )
-        # no need for pooling if training for CIFAR-10
-        self.net.maxpool = nn.Identity()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass."""
-        return self.net(x)
 
 
 # get_resnet18: NetGen = lazy_config_wrapper(NetCifarResnet18)

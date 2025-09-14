@@ -17,12 +17,10 @@ return None and the dispatch of the next task
 in the chain specified by project.dispatch will be used.
 """
 
-from pathlib import Path
+from omegaconf import DictConfig, OmegaConf
 
-from omegaconf import DictConfig
-
-from project.task.default.dispatch import dispatch_config as dispatch_default_config
-from project.task.cifar_resnet18.dataset import get_dataloader_generators
+from config import get_config
+from project.task.cifar_resnet18.dataset import get_data_utils_generators
 from project.task.cifar_resnet18.models import (
     get_network_generator_resnet_sparsyfed,
     get_network_generator_resnet_sparsyfed_no_act,
@@ -33,11 +31,13 @@ from project.task.cifar_resnet18.train_test import (
     get_fed_eval_fn,
     get_fixed_train_and_prune,
     get_train_and_prune,
+    get_on_evaluate_config_fn,
+    get_on_fit_config_fn,
     test_hetero_flash,
     train,
     test,
 )
-from project.types.common import DataStructure, TrainStructure
+from project.types.common import ConfigStructure, DataStructure, TrainStructure
 
 
 def dispatch_train(
@@ -135,47 +135,29 @@ def dispatch_data(cfg: DictConfig) -> DataStructure | None:
         The net generator, client dataloader generator and fed dataloader generator.
         Return None if you cannot match the cfg.
     """
-    # Select the value for the key with {} default at nested dicts
-    # and None default at the final key
     client_model_and_data: str | None = cfg.get(
         "task",
         {},
     ).get("model_and_data", None)
 
-    # Select the partition dir
-    # if it does not exist data cannot be loaded
-    # for MNIST and the dispatch should return None
-    partition_dir: str | None = cfg.get("dataset", {}).get(
-        "partition_dir",
-        None,
-    )
-
-    # Only consider situations where both are not None
-    # otherwise data loading would failr later
-    if client_model_and_data is not None and partition_dir is not None:
-        # Obtain the dataloader generators
-        # for the provided partition dir
+    if client_model_and_data is not None:
+        args = get_config()
         (
             client_dataloader_gen,
             fed_dataloader_gen,
-        ) = get_dataloader_generators(
-            Path(partition_dir),
-        )
+            num_classes,
+        ) = get_data_utils_generators(args)
         alpha: float = cfg.get("task", {}).get("alpha", 1.0)
         sparsity: float = cfg.get("task", {}).get("sparsity", 0.0)
-        num_classes: int = cfg.get("dataset", {}).get(
-            "num_classes",
-            10,
-        )
+        mask = cfg.get("task", {}).get("mask", 0.0)
+        sparsity = sparsity - mask
 
-        # Case insensitive matches
         if client_model_and_data.upper() == "CIFAR_RN18":
             return (
                 get_resnet18(num_classes=num_classes),
                 client_dataloader_gen,
                 fed_dataloader_gen,
             )
-        # SparseFed
         if client_model_and_data.upper() == "CIFAR_SPARSYFED_RN18":
             return (
                 get_network_generator_resnet_sparsyfed(
@@ -184,7 +166,6 @@ def dispatch_data(cfg: DictConfig) -> DataStructure | None:
                 client_dataloader_gen,
                 fed_dataloader_gen,
             )
-        # SparseFed with no activation
         if client_model_and_data.upper() == "CIFAR_SPARSYFED_NA_RN18":
             return (
                 get_network_generator_resnet_sparsyfed_no_act(
@@ -193,7 +174,6 @@ def dispatch_data(cfg: DictConfig) -> DataStructure | None:
                 client_dataloader_gen,
                 fed_dataloader_gen,
             )
-        # ZeroFL
         if client_model_and_data.upper() == "CIFAR_ZEROFL_RN18":
             return (
                 get_network_generator_resnet_zerofl(
@@ -202,16 +182,48 @@ def dispatch_data(cfg: DictConfig) -> DataStructure | None:
                 client_dataloader_gen,
                 fed_dataloader_gen,
             )
-        # FLASH
-        if client_model_and_data.upper() == "CIFAR_FLASH_RN18":
-            return (
-                get_resnet18(num_classes=num_classes),
-                client_dataloader_gen,
-                fed_dataloader_gen,
-            )
+    if client_model_and_data.upper() == "CIFAR_FLASH_RN18":
+        return (
+            get_resnet18(num_classes=num_classes),
+            client_dataloader_gen,
+            fed_dataloader_gen,
+        )
 
-    # Cannot match, send to next dispatch in chain
     return None
 
 
-dispatch_config = dispatch_default_config
+def dispatch_config(cfg: DictConfig) -> ConfigStructure | None:
+    """Generate fit/eval configs from ``config.get_config``."""
+
+    args = get_config()
+
+    fit_config = {
+        "net_config": {},
+        "dataloader_config": {"batch_size": args.batch_size},
+        "run_config": {
+            "epochs": args.n_client_epoch,
+            "learning_rate": args.lr,
+        },
+        "extra": {},
+    }
+
+    eval_config = {
+        "net_config": {},
+        "dataloader_config": {"batch_size": args.batch_size},
+        "run_config": {},
+        "extra": {},
+    }
+
+    fed_test_config = {
+        "net_config": {},
+        "dataloader_config": {"batch_size": args.batch_size},
+        "run_config": {},
+        "extra": {},
+    }
+
+    cfg.task.fed_test_config = OmegaConf.create(fed_test_config)
+
+    return (
+        get_on_fit_config_fn(fit_config),
+        get_on_evaluate_config_fn(eval_config),
+    )

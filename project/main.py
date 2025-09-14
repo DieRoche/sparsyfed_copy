@@ -22,6 +22,7 @@ from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 
 import wandb
+from config import get_config
 
 # Only import from the project root
 # Never do a relative import nor one that assumes a given folder structure
@@ -67,11 +68,8 @@ def main(cfg: DictConfig) -> None:
     # Print parsed config
     log(logging.INFO, OmegaConf.to_yaml(cfg))
 
-    wandb_config = OmegaConf.to_container(
-        cfg,
-        resolve=True,
-        throw_on_missing=True,
-    )
+    args = get_config()
+    wandb_config = {k: v for k, v in vars(args).items()}
 
     # Obtain the output dir from hydra
     original_hydra_dir = Path(
@@ -105,9 +103,9 @@ def main(cfg: DictConfig) -> None:
     # if not it returns a dummy run
     with wandb_init(
         cfg.use_wandb,
-        **cfg.wandb.setup,
-        settings=wandb.Settings(start_method="thread"),
+        project="compression_FL",
         config=wandb_config,
+        settings=wandb.Settings(start_method="thread"),
     ) as run:
         log(
             logging.INFO,

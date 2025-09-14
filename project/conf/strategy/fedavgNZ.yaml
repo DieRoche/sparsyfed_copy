@@ -1,0 +1,5 @@
+---
+name: FedAvgNZ
+
+init:
+  _target_: project.fed.server.strategy.fedavgNZ.FedAvgNZ

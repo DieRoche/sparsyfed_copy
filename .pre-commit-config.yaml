@@ -1,0 +1,69 @@
+---
+default_install_hook_types: [pre-commit, pre-push]
+exclude: |
+  (?x)^(
+                outputs/|
+                wandb/|
+                multirun/|
+                dev/|
+                data/|
+                run_scripts/|
+                .pre-commit-config.yaml
+  )$
+  
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.1.6
+    hooks:
+        - id: ruff
+          types_or: [python, pyi, jupyter]
+          args: [ --fix, --preview]
+  - repo: https://github.com/PyCQA/docformatter
+    rev: v1.7.5
+    hooks:
+      - id: docformatter
+        additional_dependencies: [tomli]
+        args: [--in-place, --config, ./pyproject.toml]
+  # - repo: https://github.com/lyz-code/yamlfix/
+  #   rev: 1.15.0
+  #   hooks:
+  #     - id: yamlfix
+  # - repo: https://github.com/adrienverge/yamllint.git
+  #   rev: v1.32.0
+  #   hooks:
+  #     - id: yamllint
+  #       args: [--format=parsable, --strict]
+  - repo: https://github.com/psf/black
+    rev: 23.11.0
+    hooks:
+    - id: black-jupyter
+      language_version: python3.11
+      args: [ --preview ]
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy
+        entry: poetry run mypy --incremental --show-traceback
+        language: system
+        types: [file, python]
+        stages: [pre-push, manual]
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0  # Use the ref you want to point at
+    hooks:
+      - id: check-added-large-files
+      - id: check-ast
+      - id: check-case-conflict
+      - id: check-merge-conflict
+      - id: detect-private-key
+
+ci:
+  autofix_commit_msg: |
+    [pre-commit.ci] auto fixes from pre-commit.com hooks
+
+    for more information, see https://pre-commit.ci
+  autofix_prs: true
+  autoupdate_branch: ''
+  autoupdate_commit_msg: '[pre-commit.ci] pre-commit autoupdate'
+  autoupdate_schedule: weekly
+  skip: [mypy]
+  submodules: false

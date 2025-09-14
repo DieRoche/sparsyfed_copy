@@ -1,0 +1,5 @@
+---
+name: FedAvg
+
+init:
+  _target_: flwr.server.strategy.FedAvg

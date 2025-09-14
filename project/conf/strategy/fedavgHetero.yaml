@@ -1,0 +1,5 @@
+---
+name: FedAvgHetero
+
+init:
+  _target_: project.fed.server.strategy.fedavgHetero.FedAvgHetero

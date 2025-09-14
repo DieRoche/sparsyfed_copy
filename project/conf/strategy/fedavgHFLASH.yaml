@@ -1,0 +1,5 @@
+---
+name: FedAvgHFLASH
+
+init:
+  _target_: project.fed.server.strategy.fedavgHFLASH.FedAvgHFLASH

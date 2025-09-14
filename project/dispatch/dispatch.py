@@ -13,30 +13,9 @@ from project.task.default.dispatch import dispatch_config as dispatch_default_co
 
 from project.task.cifar_resnet18.dispatch import (
     dispatch_config as dispatch_resnet18_config,
-)
-from project.task.cifar_resnet18.dispatch import dispatch_data as dispatch_resnet18_data
-from project.task.cifar_resnet18.dispatch import (
+    dispatch_data as dispatch_resnet18_data,
     dispatch_train as dispatch_resnet18_train,
 )
-
-
-# Speech command dispatch
-from project.task.speech_resnet18.dispatch import (
-    dispatch_config as dispatch_speech_resnet18_config,
-)
-from project.task.speech_resnet18.dispatch import (
-    dispatch_data as dispatch_speech_resnet18_data,
-)
-from project.task.speech_resnet18.dispatch import (
-    dispatch_train as dispatch_speech_resnet18_train,
-)
-
-# ViT dispatch
-from project.task.cub_vit.dispatch import (
-    dispatch_config as dispatch_vit_config,
-)
-from project.task.cub_vit.dispatch import dispatch_data as dispatch_vit_data
-from project.task.cub_vit.dispatch import dispatch_train as dispatch_vit_train
 
 
 from project.types.common import ConfigStructure, DataStructure, TrainStructure
@@ -63,8 +42,6 @@ def dispatch_train(cfg: DictConfig) -> TrainStructure:
     # Create the list of task dispatches to try
     task_train_functions: list[Callable[[DictConfig], TrainStructure | None]] = [
         dispatch_resnet18_train,
-        dispatch_speech_resnet18_train,
-        dispatch_vit_train,
     ]
 
     # Match the first function which does not return None
@@ -101,8 +78,6 @@ def dispatch_data(cfg: DictConfig) -> DataStructure:
         Callable[[DictConfig], DataStructure | None]
     ] = [
         dispatch_resnet18_data,
-        dispatch_speech_resnet18_data,
-        dispatch_vit_data,
     ]
 
     # Match the first function which does not return None
@@ -140,8 +115,6 @@ def dispatch_config(cfg: DictConfig) -> ConfigStructure:
     task_config_functions: list[Callable[[DictConfig], ConfigStructure | None]] = [
         dispatch_default_config,
         dispatch_resnet18_config,
-        dispatch_speech_resnet18_config,
-        dispatch_vit_config,
     ]
 
     # Match the first function which does not return None

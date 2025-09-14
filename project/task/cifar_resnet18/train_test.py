@@ -44,8 +44,6 @@ class TrainConfig(BaseModel):
     device: torch.device
     epochs: int
     learning_rate: float
-    final_learning_rate: float  # ? to remove
-    # tot_rounds: int
     curr_round: int
 
     class Config:
@@ -275,10 +273,11 @@ def get_fixed_train_and_prune(
         # --->
 
         # FLASH
-        if _config["curr_round"] == 1 and _config["warmup"] > 0:
+        warmup_epochs = _config.get("warmup", 0)
+        if _config["curr_round"] == 1 and warmup_epochs > 0:
             # temp_net = deepcopy(net)
             log(logging.DEBUG, "First round, warmup training")
-            _config["epochs"] = _config["warmup"]
+            _config["epochs"] = warmup_epochs
 
         # train the network, with the current parameter
         metrics = fixed_train(

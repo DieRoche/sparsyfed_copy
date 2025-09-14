@@ -77,6 +77,12 @@ def generic_get_parameters(net: nn.Module) -> NDArrays:
     return parameters
 
 
+def tensor_dict_bytes(tensors: NDArrays) -> int:
+    """Return the total number of bytes required to store tensors."""
+
+    return int(sum(t.nbytes for t in tensors))
+
+
 def load_parameters_from_file(path: Path) -> Parameters:
     """Load parameters from a binary file.
 

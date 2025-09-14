@@ -16,7 +16,7 @@ def str2bool(v):
 def get_config() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Federated Averaging Experiments")
-    parser.add_argument("--method", type=str, default="FEDQCLIP")
+    parser.add_argument("--method", type=str, default="Sparsyfed")
     parser.add_argument("--n_client", type=int, default=10)
     parser.add_argument("--client_fraction", type=float, default=0.5)
     parser.add_argument("--dirichlet", type=float, default=0.5)
@@ -30,10 +30,8 @@ def get_config() -> argparse.Namespace:
     parser.add_argument("--model", type=str, default="resnet")
     parser.add_argument("--seed", type=int, default=5)
 
-    parser.add_argument("--gamma_c", type=float, default=10)
-    parser.add_argument("--gamma_s", type=float, default=1e6)
-    parser.add_argument("--quantize", type=str2bool, default=True)
-    parser.add_argument("--bit", type=int, default=16)
+    parser.add_argument("--sparisty", type=float, default=0.95)
+    
 
     parser.add_argument("--device", type=str, default="cuda")
 

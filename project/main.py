@@ -3,7 +3,9 @@
 It includes processing the dataset, instantiate strategy, specifying how the global
 model will be evaluated, etc. In the end, this script saves the results.
 
-poetry run python -m project.main --config-name=cifar
+Run from the repository root with::
+
+    python main.py
 """
 
 import json
@@ -69,7 +71,7 @@ def main(cfg: DictConfig) -> None:
     log(logging.INFO, OmegaConf.to_yaml(cfg))
 
     args = get_config()
-    wandb_config = {k: v for k, v in vars(args).items()}
+    wandb_config = dict(vars(args).items())
 
     # Obtain the output dir from hydra
     original_hydra_dir = Path(

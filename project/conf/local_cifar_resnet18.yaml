@@ -1,0 +1,3 @@
+defaults:
+  - cifar_resnet18
+  - _self_

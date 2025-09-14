@@ -170,7 +170,7 @@ def main(cfg: DictConfig) -> None:
             (
                 net_generator,
                 client_dataloader_gen,
-                fed_dataloater_gen,
+                fed_dataloader_gen,
             ) = dispatch_data(
                 cfg,
             )
@@ -199,7 +199,7 @@ def main(cfg: DictConfig) -> None:
             # as is the to_container
             evaluate_fn: FedEvalFN | None = get_fed_eval_fn(
                 net_generator,
-                fed_dataloater_gen,
+                fed_dataloader_gen,
                 test_func,
                 cast(
                     dict,
@@ -283,7 +283,7 @@ def main(cfg: DictConfig) -> None:
                 dataloader_gen=client_dataloader_gen,
                 train=train_func,
                 test=test_func,
-                fed_dataloader_gen=fed_dataloater_gen,
+                fed_dataloader_gen=fed_dataloader_gen,
             )
 
             # Seed everything to maybe improve reproduceability

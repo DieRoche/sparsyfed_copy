@@ -138,7 +138,7 @@ def test(
 
 def get_fed_eval_fn(
     net_generator: NetGen,
-    fed_dataloater_generator: FedDataloaderGen,
+    fed_dataloader_generator: FedDataloaderGen,
     test_func: TestFunc,
     _config: dict,
     working_dir: Path,
@@ -161,7 +161,7 @@ def get_fed_eval_fn(
     config: ClientConfig = ClientConfig(**_config)
     del _config
 
-    testloader = fed_dataloater_generator(
+    testloader = fed_dataloader_generator(
         True,
         config.dataloader_config,
     )

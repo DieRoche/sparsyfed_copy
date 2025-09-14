@@ -15,6 +15,11 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import cast
+import warnings
+
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="dateutil")
+
+CONFIG_DIR = str(Path(__file__).resolve().parent / "conf")
 
 import flwr as fl
 import hydra
@@ -55,7 +60,7 @@ os.environ["RAY_MEMORY_MONITOR_REFRESH_MS"] = "0"
 
 
 @hydra.main(
-    config_path="conf",
+    config_path=CONFIG_DIR,
     config_name="local_cifar_resnet18",
     version_base=None,
 )

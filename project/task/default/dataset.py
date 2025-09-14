@@ -13,7 +13,7 @@ You can use all those functions from functions/methods defined here of course.
 from collections import defaultdict
 
 import torch
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 
 
@@ -24,12 +24,9 @@ class ClientDataloaderConfig(BaseModel):
     components are present, fails early if config is mismatched to dataloader.
     """
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     batch_size: int
-
-    class Config:
-        """Setting to allow any types, including library ones like torch.device."""
-
-        arbitrary_types_allowed = True
 
 
 class FedDataloaderConfig(BaseModel):
@@ -39,12 +36,9 @@ class FedDataloaderConfig(BaseModel):
     components are present, fails early if config is mismatched to dataloader.
     """
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     batch_size: int
-
-    class Config:
-        """Setting to allow any types, including library ones like torch.device."""
-
-        arbitrary_types_allowed = True
 
 
 def get_client_dataloader(

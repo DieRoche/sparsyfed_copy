@@ -33,6 +33,7 @@ from project.task.utils.drop import (
     drop_threshold,
     matrix_drop,
 )
+from project.task.utils.power_utils import stable_sign_power
 from project.task.utils.spectral_norm import SpectralNormHandler
 
 torch.autograd.set_detect_anomaly(True)
@@ -167,7 +168,7 @@ class SparsyFedLinear(nn.Module):
             return weights
         elif self.alpha < 0:
             return self.spectral_norm_handler.compute_weight_update(weights)
-        return torch.sign(weights) * torch.pow(torch.abs(weights), self.alpha)
+        return stable_sign_power(weights, self.alpha)
 
     def _call_sparsyfed_linear(self, input, weight) -> torch.Tensor:
         if self.training:
@@ -186,9 +187,7 @@ class SparsyFedLinear(nn.Module):
                 self.weight
             )
         else:
-            sparsyfed_weight = torch.sign(self.weight) * torch.pow(
-                torch.abs(self.weight), self.alpha
-            )
+            sparsyfed_weight = stable_sign_power(self.weight, self.alpha)
 
         output = self._call_sparsyfed_linear(input, sparsyfed_weight)
 
@@ -313,7 +312,7 @@ class SparsyFedConv2D(nn.Module):
             return weight
         if self.alpha < 0:
             return self.spectral_norm_handler.compute_weight_update(weight)
-        return torch.sign(weight) * torch.pow(torch.abs(weight), self.alpha)
+        return stable_sign_power(weight, self.alpha)
 
     def _call_sparsyfed_conv2d(self, input, weight) -> torch.Tensor:
 
@@ -352,9 +351,7 @@ class SparsyFedConv2D(nn.Module):
                 self.weight
             )
         else:
-            sparsyfed_weight = torch.sign(self.weight) * torch.pow(
-                torch.abs(self.weight), self.alpha
-            )
+            sparsyfed_weight = stable_sign_power(self.weight, self.alpha)
 
         # Perform the forward pass
         output = self._call_sparsyfed_conv2d(

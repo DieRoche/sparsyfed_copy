@@ -1,5 +1,6 @@
 """Flower server accounting for Weights&Biases+file saving."""
 
+import inspect
 import time
 import timeit
 from collections.abc import Callable
@@ -65,7 +66,7 @@ class WandbServer(Server):
         self,
         num_rounds: int,
         timeout: float | None,
-    ) -> History:
+    ) -> History | tuple[History, float]:
         """Run federated averaging for a number of rounds.
 
         Parameters
@@ -77,17 +78,24 @@ class WandbServer(Server):
 
         Returns
         -------
-        History
+        History or tuple[History, float]
             The history of the training.
             Potentially using a pre-defined history.
+            When required by newer versions of Flower the elapsed time is also
+            returned alongside the history.
         """
         history = self.history if self.history is not None else History()
 
         # Initialize parameters
         log(INFO, "Initializing global parameters")
-        self.parameters = self._get_initial_parameters(
-            timeout=timeout,
-        )
+        initial_parameters_signature = inspect.signature(self._get_initial_parameters)
+        expects_server_round = "server_round" in initial_parameters_signature.parameters
+        initial_parameters_kwargs: dict[str, object] = {}
+        if expects_server_round:
+            initial_parameters_kwargs["server_round"] = 0
+        if "timeout" in initial_parameters_signature.parameters:
+            initial_parameters_kwargs["timeout"] = timeout
+        self.parameters = self._get_initial_parameters(**initial_parameters_kwargs)
         log(INFO, "Evaluating initial parameters")
         res = self.strategy.evaluate(
             0,
@@ -250,6 +258,8 @@ class WandbServer(Server):
         end_time = timeit.default_timer()
         elapsed = end_time - start_time
         log(INFO, "FL finished in %s", elapsed)
+        if expects_server_round:
+            return history, elapsed
         return history
 
 

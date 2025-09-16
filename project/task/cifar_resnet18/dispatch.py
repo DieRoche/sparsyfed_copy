@@ -17,7 +17,7 @@ return None and the dispatch of the next task
 in the chain specified by project.dispatch will be used.
 """
 
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf, open_dict
 
 from config import get_config
 from project.task.cifar_resnet18.dataset import get_data_utils_generators
@@ -222,7 +222,7 @@ def dispatch_config(cfg: DictConfig) -> ConfigStructure | None:
 
     # Populate fed_test_config while preserving OmegaConf struct mode
     # by temporarily opening the task config for modification.
-    with OmegaConf.open_dict(cfg.task):
+    with open_dict(cfg.task):
         cfg.task.fed_test_config = OmegaConf.create(fed_test_config)
 
     return (

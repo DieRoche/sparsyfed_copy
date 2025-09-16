@@ -269,8 +269,10 @@ def main(cfg: DictConfig) -> None:
                 initial_parameters=initial_parameters,
             )
 
+
             if "working_dir" in cfg.strategy.init:
                 strategy_kwargs["working_dir"] = working_dir
+
 
             strategy = instantiate(
                 cfg.strategy.init,

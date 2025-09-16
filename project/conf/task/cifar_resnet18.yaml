@@ -29,3 +29,7 @@ evaluate_metrics:
   # - test_accuracy_0.999
   - sparsity
   - exponent
+
+# Placeholder for fed_test_config to allow runtime assignment while
+# keeping OmegaConf in struct mode. Values are populated at runtime.
+fed_test_config: {}

@@ -21,6 +21,8 @@ from project.task.utils.common import (
 
 HYDRA_FULL_ERROR = 1
 
+CONFIG_DIR = str(Path(__file__).resolve().parent.parent.parent / "conf")
+
 
 def _download_data(
     dataset_dir: Path,
@@ -395,7 +397,7 @@ def _power_law_split(
 
 
 @hydra.main(
-    config_path="../../conf",
+    config_path=CONFIG_DIR,
     config_name="base",
     version_base=None,
 )

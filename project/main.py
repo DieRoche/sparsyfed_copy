@@ -250,8 +250,7 @@ def main(cfg: DictConfig) -> None:
             # get_weighted_avg_metrics_agg_fn obeys
             # the fit_metrics and evaluate_metrics
             # in the cfg.task
-            strategy = instantiate(
-                cfg.strategy.init,
+            strategy_kwargs = dict(
                 fraction_fit=sys.float_info.min,
                 fraction_evaluate=sys.float_info.min,
                 min_fit_clients=cfg.fed.num_clients_per_round,
@@ -268,7 +267,14 @@ def main(cfg: DictConfig) -> None:
                     cfg.task.evaluate_metrics,
                 ),
                 initial_parameters=initial_parameters,
-                # working_dir=working_dir,
+            )
+
+            if "working_dir" in cfg.strategy.init:
+                strategy_kwargs["working_dir"] = working_dir
+
+            strategy = instantiate(
+                cfg.strategy.init,
+                **strategy_kwargs,
             )
 
             # Server that handles Wandb and file saving

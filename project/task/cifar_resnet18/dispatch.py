@@ -194,7 +194,6 @@ def dispatch_data(cfg: DictConfig) -> DataStructure | None:
 
 def dispatch_config(cfg: DictConfig) -> ConfigStructure | None:
     """Generate fit/eval configs from ``config.get_config``."""
-
     args = get_config()
 
     fit_config = {
@@ -221,7 +220,10 @@ def dispatch_config(cfg: DictConfig) -> ConfigStructure | None:
         "extra": {},
     }
 
-    cfg.task.fed_test_config = OmegaConf.create(fed_test_config)
+    # Populate fed_test_config while preserving OmegaConf struct mode
+    # by temporarily opening the task config for modification.
+    with OmegaConf.open_dict(cfg.task):
+        cfg.task.fed_test_config = OmegaConf.create(fed_test_config)
 
     return (
         get_on_fit_config_fn(fit_config),

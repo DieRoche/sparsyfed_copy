@@ -269,8 +269,10 @@ def main(cfg: DictConfig) -> None:
                 initial_parameters=initial_parameters,
             )
 
-            if OmegaConf.hasattr(cfg, "strategy.init.working_dir"):
+
+            if "working_dir" in cfg.strategy.init:
                 strategy_kwargs["working_dir"] = working_dir
+
 
             strategy = instantiate(
                 cfg.strategy.init,

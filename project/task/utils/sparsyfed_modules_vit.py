@@ -36,6 +36,7 @@ from project.task.utils.drop import (
     drop_threshold,
     matrix_drop,
 )
+from project.task.utils.power_utils import POWER_EPS, stable_sign_power
 from project.task.utils.spectral_norm import SpectralNormHandler
 
 torch.autograd.set_detect_anomaly(True)
@@ -149,23 +150,21 @@ class SparsyFedLinear(nn.Module):
         elif self.alpha < 0:
             weight = self.spectral_norm_handler.compute_weight_update(self.weight)
         else:
-            # Apply minimum threshold to prevent very small values
-            weight_abs = torch.abs(self.weight)
-            weight_abs = torch.clamp(weight_abs, min=self.min_abs_value)
-
-            # Safe power operation with clamped values
-            powered_weights = torch.pow(weight_abs, self.alpha)
-
-            # Restore signs
-            weight = torch.sign(self.weight) * powered_weights
+            min_abs = max(self.min_abs_value, POWER_EPS)
+            clamped_abs = torch.clamp(torch.abs(self.weight), min=min_abs)
+            weight = stable_sign_power(
+                self.weight,
+                self.alpha,
+                min_abs=min_abs,
+            )
 
             # Add debug checks
             if torch.isnan(weight).any():
                 logging.error(
                     f"NaN values detected after power operation. Alpha: {self.alpha}"
                 )
-                logging.error(f"Min weight_abs: {weight_abs.min()}")
-                logging.error(f"Max weight_abs: {weight_abs.max()}")
+                logging.error(f"Min weight_abs: {clamped_abs.min()}")
+                logging.error(f"Max weight_abs: {clamped_abs.max()}")
                 # Replace NaN values with original weights
                 weight = torch.where(torch.isnan(weight), self.weight, weight)
 

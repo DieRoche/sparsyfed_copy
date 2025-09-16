@@ -29,6 +29,7 @@ from project.task.utils.drop import (
     drop_threshold,
     matrix_drop,
 )
+from project.task.utils.power_utils import stable_sign_power
 
 torch.autograd.set_detect_anomaly(True)
 
@@ -160,7 +161,7 @@ class SWATLinear(nn.Module):
 
     def get_weights(self):
         weights = self.weight.detach()
-        return torch.sign(weights) * torch.pow(torch.abs(weights), self.alpha)
+        return stable_sign_power(weights, self.alpha)
 
     def _call_swat_linear(self, input, weight) -> torch.Tensor:
         if self.training:
@@ -182,9 +183,7 @@ class SWATLinear(nn.Module):
         if self.alpha == 1.0:
             powerprop_weight = self.weight
         else:
-            powerprop_weight = torch.sign(self.weight) * torch.pow(
-                torch.abs(self.weight), self.alpha
-            )
+            powerprop_weight = stable_sign_power(self.weight, self.alpha)
 
         # Perform SWAT forward pass
         output = self._call_swat_linear(input, powerprop_weight)
@@ -309,7 +308,7 @@ class SWATConv2D(nn.Module):
 
     def get_weight(self):
         weight = self.weight.detach()
-        return torch.sign(weight) * torch.pow(torch.abs(weight), self.alpha)
+        return stable_sign_power(weight, self.alpha)
 
     def _call_swat_conv2d(self, input, weight) -> torch.Tensor:
 
@@ -370,9 +369,7 @@ class SWATConv2D(nn.Module):
 
         # Apply the re-parametrisation to `self.weight` using `self.alpha`
         if self.alpha != 1.0:
-            powerprop_weight = torch.sign(self.weight) * torch.pow(
-                torch.abs(self.weight), self.alpha
-            )
+            powerprop_weight = stable_sign_power(self.weight, self.alpha)
         else:
             powerprop_weight = self.weight
 

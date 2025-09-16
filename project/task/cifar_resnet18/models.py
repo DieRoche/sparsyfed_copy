@@ -13,6 +13,7 @@ import torch.nn.functional as F
 from torch import nn
 from ResNet18 import ResNet18 as BaseResNet18
 
+from project.task.utils.power_utils import stable_sign_power
 from project.task.utils.sparsyfed_modules import SparsyFedConv2D, SparsyFedLinear
 from project.task.utils.sparsyfed_no_act_modules import (
     SparsyFed_no_act_Conv1D,
@@ -115,7 +116,7 @@ def init_weights(module: nn.Module) -> None:
             )
             and module.alpha > 1
         ):
-            u = torch.sign(u) * torch.pow(torch.abs(u), 1.0 / module.alpha)
+            u = stable_sign_power(u, 1.0 / module.alpha)
 
         module.weight.data = u
         if module.bias is not None:

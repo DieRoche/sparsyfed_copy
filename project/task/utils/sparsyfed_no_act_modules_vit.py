@@ -13,6 +13,7 @@ from torch import nn
 import torch.nn.functional as F
 from torch.types import _int, _size
 
+from project.task.utils.power_utils import stable_sign_power
 from project.task.utils.spectral_norm import SpectralNormHandler
 
 
@@ -50,7 +51,7 @@ class SparsyFed_no_act_linear(nn.Module):
             return weight
         elif self.alpha < 0:
             return self.spectral_norm_handler.compute_weight_update(self.weight)
-        return torch.sign(weight) * torch.pow(torch.abs(weight), self.alpha)
+        return stable_sign_power(weight, self.alpha)
 
     def forward(self, inputs, mask=None):
         # Apply the re-parametrisation to `self.weight` using `self.alpha`
@@ -59,9 +60,7 @@ class SparsyFed_no_act_linear(nn.Module):
         elif self.alpha < 0:
             weight = self.spectral_norm_handler.compute_weight_update(self.weight)
         else:
-            weight = torch.sign(self.weight) * torch.pow(
-                torch.abs(self.weight), self.alpha
-            )
+            weight = stable_sign_power(self.weight, self.alpha)
         # Apply a mask, if given
         if mask is not None:
             weight *= mask

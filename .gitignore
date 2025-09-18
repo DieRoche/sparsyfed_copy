@@ -1,3 +1,4 @@
+*.gz
 # Python cache
 __pycache__
 

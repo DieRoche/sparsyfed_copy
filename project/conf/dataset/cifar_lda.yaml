@@ -9,7 +9,7 @@ dataset_dir: ./data/CIFAR${dataset.num_classes}
 partition_dir: ./data/CIFAR${dataset.num_classes}/lda_${dataset.lda_alpha}_${dataset.num_clients}
 
 # How many clients to create
-num_clients: 100
+num_clients: 10
 num_classes: 10
 
 # How large should the test set of each client
@@ -29,7 +29,7 @@ power_law: false
 
 # If the partition labels should follow a lda distribution
 lda: true
-lda_alpha: 0.1
+lda_alpha: 0.5
 
 # If the partition labels should be balanced
 balance: false

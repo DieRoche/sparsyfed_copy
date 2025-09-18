@@ -263,7 +263,7 @@ def main(cfg: DictConfig) -> None:
                     cfg.task.evaluate_metrics,
                 ),
                 initial_parameters=initial_parameters,
-                # working_dir=working_dir,
+                working_dir=working_dir,
             )
 
             # Server that handles Wandb and file saving

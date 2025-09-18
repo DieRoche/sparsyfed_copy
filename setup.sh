@@ -2,7 +2,7 @@
 
 # VPOETRY_HOME=""
 # VPYENV_ROOT=""
-VPOETRY_HOME="$HOME/.poetry"
+VPOETRY_HOME="$HOME/Documents/diego_roche/.poetry"
 VPYENV_ROOT="$HOME/.pyenv"
 VPYTHON_VERSION="3.11.6"
 
@@ -32,6 +32,9 @@ if ! [ -x "$(command -v pyenv)" ]; then
 
 
   curl https://pyenv.run | bash
+  export PYENV_ROOT="$VPYENV_ROOT"
+  export PATH="$PYENV_ROOT/bin:$PATH"
+  eval "$(PYENV_ROOT="$PYENV_ROOT" pyenv init -)"
   eval "$(PYENV_ROOT=$VPYENV_ROOT pyenv init -)"
   echo "export PYENV_ROOT=\"$VPYENV_ROOT\"" >> ~/.bashrc
   echo 'command -v pyenv >/dev/null || export PATH="$PYENV_ROOT/bin:$PATH"' >> ~/.bashrc
@@ -41,6 +44,9 @@ if ! [ -x "$(command -v pyenv)" ]; then
   echo 'eval "$(pyenv init -)"' >> ~/.profile
 else
   echo "Pyenv is already installed"
+  export PYENV_ROOT="$VPYENV_ROOT"
+  export PATH="$PYENV_ROOT/bin:$PATH"
+  eval "$(pyenv init -)"
 fi
 
 if pyenv versions | grep -q $VPYTHON_VERSION; then

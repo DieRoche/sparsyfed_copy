@@ -14,10 +14,10 @@ num_classes: 10
 
 # How large should the test set of each client
 # be relative to the train set
-val_ratio: 0.1
+val_ratio: 0.2
 
 # Seed for partition generation
-seed: 1337
+seed: 5
 
 # If the partition labels 
 # should be independent and identically distributed 

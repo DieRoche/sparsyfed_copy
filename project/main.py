@@ -53,7 +53,7 @@ os.environ["RAY_MEMORY_MONITOR_REFRESH_MS"] = "0"
 
 @hydra.main(
     config_path="conf",
-    config_name="local_cifar_resnet18",
+    config_name="cifar_resnet18",
     version_base=None,
 )
 def main(cfg: DictConfig) -> None:

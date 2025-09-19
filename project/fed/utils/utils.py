@@ -269,14 +269,30 @@ def get_weighted_avg_metrics_agg_fn(
             [num_examples for num_examples, _ in metrics],
         )
         weighted_metrics: dict = defaultdict(float)
+        min_test_acc: float | None = None
+        max_test_acc: float | None = None
+
         for num_examples, metric in metrics:
+            test_acc = metric.get("test_accuracy")
+            if isinstance(test_acc, (int, float)):
+                if min_test_acc is None or test_acc < min_test_acc:
+                    min_test_acc = float(test_acc)
+                if max_test_acc is None or test_acc > max_test_acc:
+                    max_test_acc = float(test_acc)
+
             for key, value in metric.items():
                 if key in to_agg:
                     weighted_metrics[key] += num_examples * value
 
-        return {
+        aggregated_metrics = {
             key: value / total_num_examples for key, value in weighted_metrics.items()
         }
+
+        if min_test_acc is not None and max_test_acc is not None:
+            aggregated_metrics["acc_clients_lowest"] = min_test_acc
+            aggregated_metrics["acc_clients_highest"] = max_test_acc
+
+        return aggregated_metrics
 
     return weighted_avg
 

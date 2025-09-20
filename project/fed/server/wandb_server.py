@@ -12,6 +12,8 @@ from flwr.server.client_manager import ClientManager
 from flwr.server.history import History
 from flwr.server.strategy import Strategy
 
+from project.fed.utils.traffic import parameters_size_bytes
+
 
 class WandbServer(Server):
     """Flower server."""
@@ -113,6 +115,9 @@ class WandbServer(Server):
         self.save_parameters_to_file(self.parameters)
         self.save_files_per_round(0)
 
+        total_upload_traffic = 0.0
+        total_download_traffic = 0.0
+
         for current_round in range(1, num_rounds + 1):
             # Train model and replace previous global model
             # prendere un timer sulla fit
@@ -127,8 +132,37 @@ class WandbServer(Server):
                 (
                     parameters_prime,
                     fit_metrics,
-                    _,
+                    fit_results_and_failures,
                 ) = res_fit  # fit_metrics_aggregated
+
+                fit_results, _ = fit_results_and_failures
+
+                download_traffic = (
+                    len(fit_results) * parameters_size_bytes(self.parameters)
+                )
+                upload_traffic = sum(
+                    parameters_size_bytes(fit_res.parameters)
+                    for _, fit_res in fit_results
+                )
+
+                total_upload_traffic += upload_traffic
+                total_download_traffic += download_traffic
+
+                if fit_metrics is None:
+                    fit_metrics = {}
+
+                fit_metrics.update(
+                    {
+                        "upload_traffic": float(upload_traffic),
+                        "download_traffic": float(download_traffic),
+                        "total_upload_traffic": float(total_upload_traffic),
+                        "total_download_traffic": float(total_download_traffic),
+                        "overall_traffic": float(
+                            total_upload_traffic + total_download_traffic
+                        ),
+                    }
+                )
+
                 if parameters_prime:
                     self.parameters = parameters_prime
                     # try to check the parameters sparsity here

@@ -167,7 +167,7 @@ class WandbHistory(History):
         if self.use_wandb:
             for key in metrics:
                 if key == "test_accuracy":
-                    key_name = "centralised_test_accuracy"
+                    key_name = "acc_servers_highest"
                 else:
                     key_name = key
                 wandb.log(

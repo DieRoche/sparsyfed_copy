@@ -274,6 +274,8 @@ def main(cfg: DictConfig) -> None:
                 save_parameters_to_file=save_parameters_to_file,
                 save_files_per_round=save_files_per_round,
             )
+            # Ensure clients are scheduled sequentially to avoid Ray resource limits
+            server.max_workers = 1
 
             # Client generation function for Ray
             # Do not change

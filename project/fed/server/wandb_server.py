@@ -13,6 +13,7 @@ from flwr.server.history import History
 from flwr.server.strategy import Strategy
 
 from project.fed.utils.traffic import parameters_size_bytes
+from project.utils.utils import cleanup_memory
 
 
 class WandbServer(Server):
@@ -219,6 +220,7 @@ class WandbServer(Server):
             # Saver round parameters and files
             self.save_parameters_to_file(self.parameters)
             self.save_files_per_round(current_round)
+            cleanup_memory()
 
         # Bookkeeping
         end_time = timeit.default_timer()

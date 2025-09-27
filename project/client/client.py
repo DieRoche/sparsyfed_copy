@@ -4,7 +4,6 @@ Make sure the model and dataset are not loaded before the fit function.
 """
 
 import json
-import math
 from pathlib import Path
 
 
@@ -54,63 +53,6 @@ class ClientConfig(BaseModel):
         """Setting to allow any types, including library ones like torch.device."""
 
         arbitrary_types_allowed = True
-
-
-class LRScheduler:
-    """Learning rate scheduler with warmup and exponential decay."""
-
-    def __init__(
-        self,
-        initial_lr: float,
-        final_lr: float,
-        total_rounds: int = 700,
-        warmup_rounds: int = 0,
-    ) -> None:
-        """Initialize the learning rate scheduler.
-
-        Parameters
-        ----------
-        initial_lr : float
-            Initial learning rate value
-        final_lr : float
-            Final learning rate value
-        total_rounds : int, optional
-            Total number of rounds, by default 700
-        warmup_rounds : int, optional
-            Number of warmup rounds where LR stays at initial value, by default 0
-        """
-        self.initial_lr = initial_lr
-        self.final_lr = final_lr
-        self.total_rounds = total_rounds
-        self.warmup_rounds = warmup_rounds
-
-        # Pre-compute the log ratio for the exponential decay
-        self.log_ratio = math.log(self.final_lr / self.initial_lr)
-
-    def __call__(self, curr_round: int) -> float:
-        """Get the learning rate for the current round.
-
-        Parameters
-        ----------
-        curr_round : int
-            Current round number
-
-        Returns
-        -------
-        float
-            Learning rate for the current round
-        """
-        # During warmup, return initial learning rate
-        if curr_round < self.warmup_rounds:
-            return self.initial_lr
-
-        # After warmup, apply exponential decay
-        # Adjust the round number to account for warmup period
-        adjusted_round = curr_round - self.warmup_rounds
-        adjusted_total = self.total_rounds - self.warmup_rounds
-
-        exponential_term = (adjusted_round / adjusted_total) * self.log_ratio
-        return self.initial_lr * math.exp(exponential_term)
 
 
 class Client(fl.client.NumPyClient):
@@ -200,18 +142,6 @@ class Client(fl.client.NumPyClient):
         )
 
         try:
-            # Create the scheduler
-            scheduler = LRScheduler(
-                initial_lr=config.run_config["learning_rate"],
-                final_lr=config.run_config["final_learning_rate"],
-                total_rounds=config.run_config["tot_rounds"],
-                warmup_rounds=config.run_config["warmup_rounds"],
-            )
-            # Update the learning rate
-            config.run_config["learning_rate"] = scheduler(
-                config.run_config["curr_round"]
-            )
-
             config.run_config["cid"] = self.cid
 
             num_samples, metrics = self.train(

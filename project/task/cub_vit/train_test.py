@@ -11,7 +11,6 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR
 from project.fed.utils.utils import generic_get_parameters, generic_set_parameters
 from project.task.cub_vit.models import get_parameters_to_prune
 from pydantic import BaseModel
@@ -28,6 +27,8 @@ from project.task.default.train_test import (
 
 from torch.nn.utils import prune
 import wandb
+
+from project.utils.model_diagnostics import analyze_model_integrity
 
 
 # class TrainConfig(BaseModel):
@@ -62,6 +63,30 @@ class TrainConfig(BaseModel):
         """Allow torch.device type."""
 
         arbitrary_types_allowed = True
+
+
+def _report_model_integrity(net: nn.Module) -> None:
+    """Log potential structural issues before training begins."""
+
+    report = analyze_model_integrity(net)
+    for duplicate, original in report.duplicate_tensors:
+        log(
+            logging.WARNING,
+            "Tensor %s shares storage with %s; gradients might be coupled.",
+            duplicate,
+            original,
+        )
+    for duplicate, original in report.duplicate_modules:
+        log(
+            logging.WARNING,
+            "Module %s reuses instance %s; parameter updates will be shared.",
+            duplicate,
+            original,
+        )
+    if not report.super_init_ok:
+        raise RuntimeError(
+            "Model subclass of torch.nn.Module appears to miss super().__init__() call."
+        )
 
 
 def validate_data_batch(
@@ -123,6 +148,8 @@ def train_local_log(
     }
     del _config
 
+    _report_model_integrity(net)
+
     # Initialize W&B run for this client's training
     run = wandb.init(
         project="fl-client-training",
@@ -152,12 +179,6 @@ def train_local_log(
 
     optimizer = AdamW(
         net.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay
-    )
-
-    scheduler = CosineAnnealingLR(
-        optimizer,
-        T_max=config.epochs - config.warmup_epochs,
-        eta_min=config.min_learning_rate,
     )
 
     criterion = nn.CrossEntropyLoss()
@@ -234,10 +255,6 @@ def train_local_log(
                     f"Loss: {batch_loss:.6f}",
                 )
 
-        # Update learning rate
-        if epoch >= config.warmup_epochs:
-            scheduler.step()
-
         final_epoch_loss = epoch_loss / len(trainloader)
         epoch_accuracy = num_correct / total_samples
 
@@ -308,6 +325,8 @@ def train(
     config = TrainConfig(**_config)
     del _config
 
+    _report_model_integrity(net)
+
     log(logging.INFO, f"Starting training with{'out' if not use_mask else ''} mask")
 
     # Create masks if needed
@@ -332,13 +351,6 @@ def train(
     # Initialize optimizer with weight decay
     optimizer = AdamW(
         net.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay
-    )
-
-    # Cosine learning rate scheduler
-    scheduler = CosineAnnealingLR(
-        optimizer,
-        T_max=config.epochs - config.warmup_epochs,
-        eta_min=config.min_learning_rate,
     )
 
     criterion = nn.CrossEntropyLoss()
@@ -409,10 +421,6 @@ def train(
                     f"Loss: {loss.item():.6f}",
                 )
 
-        # Update learning rate
-        if epoch >= config.warmup_epochs:
-            scheduler.step()
-
         final_epoch_loss = epoch_loss / len(trainloader)
         log(
             logging.INFO,
@@ -466,6 +474,8 @@ def train_sgd(
 
     config = TrainConfig(**_config)
     del _config
+
+    _report_model_integrity(net)
 
     log(logging.INFO, f"Starting SGD training with{'out' if not use_mask else ''} mask")
     log(logging.INFO, f"Config: {config}")

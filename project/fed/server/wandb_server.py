@@ -118,6 +118,7 @@ class WandbServer(Server):
 
         total_upload_traffic = 0.0
         total_download_traffic = 0.0
+        last_logged_round: int | None = None
 
         for current_round in range(1, num_rounds + 1):
             # Train model and replace previous global model
@@ -136,10 +137,11 @@ class WandbServer(Server):
                     fit_results_and_failures,
                 ) = res_fit  # fit_metrics_aggregated
 
-                fit_results, _ = fit_results_and_failures
+                fit_results, failures = fit_results_and_failures
 
+                active_clients = len(fit_results) + len(failures)
                 download_traffic = (
-                    len(fit_results) * parameters_size_bytes(self.parameters)
+                    active_clients * parameters_size_bytes(self.parameters)
                 )
                 upload_traffic = sum(
                     parameters_size_bytes(fit_res.parameters)
@@ -172,6 +174,7 @@ class WandbServer(Server):
                     server_round=current_round,
                     metrics=fit_metrics,
                 )
+                last_logged_round = current_round
 
             # Evaluate model using strategy implementation
             res_cen = self.strategy.evaluate(
@@ -221,6 +224,20 @@ class WandbServer(Server):
             self.save_parameters_to_file(self.parameters)
             self.save_files_per_round(current_round)
             cleanup_memory()
+
+        if num_rounds > 0 and last_logged_round != num_rounds:
+            history.add_metrics_distributed_fit(
+                server_round=num_rounds,
+                metrics={
+                    "upload_traffic": 0.0,
+                    "download_traffic": 0.0,
+                    "total_upload_traffic": float(total_upload_traffic),
+                    "total_download_traffic": float(total_download_traffic),
+                    "overall_traffic": float(
+                        total_upload_traffic + total_download_traffic
+                    ),
+                },
+            )
 
         # Bookkeeping
         end_time = timeit.default_timer()

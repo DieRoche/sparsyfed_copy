@@ -149,7 +149,8 @@ class FedAvgFLASH(Strategy):
         initial_parameters: Optional[Parameters] = None,
         fit_metrics_aggregation_fn: Optional[MetricsAggregationFn] = None,
         evaluate_metrics_aggregation_fn: Optional[MetricsAggregationFn] = None,
-        # working_dir: Path,
+        working_dir: Optional[Path] = None,
+        target_sparsity: Optional[float] = None,
     ) -> None:
         super().__init__()
 
@@ -171,7 +172,8 @@ class FedAvgFLASH(Strategy):
         self.initial_parameters = initial_parameters
         self.fit_metrics_aggregation_fn = fit_metrics_aggregation_fn
         self.evaluate_metrics_aggregation_fn = evaluate_metrics_aggregation_fn
-        # self.working_dir = working_dir
+        self.working_dir = working_dir
+        self.target_sparsity = target_sparsity
 
     def __repr__(self) -> str:
         """Compute a string representation of the strategy."""
@@ -275,8 +277,10 @@ class FedAvgFLASH(Strategy):
         ]
 
         if server_round == 1:
-            # Extract target sparsity from the first result's metrics
-            target_sparsity = float(results[0][1].metrics["sparsity"])
+            # Extract target sparsity from config if provided, otherwise fallback
+            target_sparsity = self.target_sparsity
+            if target_sparsity is None:
+                target_sparsity = float(results[0][1].metrics.get("sparsity", 0.0))
 
             def compute_layer_density(layer):
                 return np.count_nonzero(layer) / layer.size

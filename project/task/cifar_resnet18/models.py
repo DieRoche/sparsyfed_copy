@@ -8,10 +8,8 @@ from flwr.common.logger import log
 import numpy as np
 
 import torch
-import torch.nn.functional as F
 
 from torch import nn
-from torchvision.models import resnet18
 
 from project.task.utils.sparsyfed_modules import SparsyFedConv2D, SparsyFedLinear
 from project.task.utils.sparsyfed_no_act_modules import (
@@ -24,45 +22,70 @@ from project.task.utils.spectral_norm import SpectralNormHandler
 from project.task.utils.swat_modules import SWATConv2D as ZeroflSwatConv2D
 from project.task.utils.swat_modules import SWATLinear as ZeroflSwatLinear
 
+def _make_norm_layer(num_features: int, use_group_norm: bool) -> nn.Module:
+    """Return the normalization layer used by the custom ResNet blocks."""
 
-class Net(nn.Module):
-    """Simple CNN adapted from 'PyTorch: A 60 Minute Blitz."""
+    if use_group_norm:
+        return nn.GroupNorm(2, num_features)
+    return nn.BatchNorm2d(num_features)
 
-    def __init__(self) -> None:
-        """Initialize the network.
 
-        Returns
-        -------
-        None
-        """
+class BasicBlock(nn.Module):
+    """Basic residual block matching the custom ResNet-18 definition."""
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        stride: int = 1,
+        *,
+        use_group_norm: bool = False,
+    ) -> None:
         super().__init__()
-        self.conv1 = nn.Conv2d(3, 6, 5)
-        self.pool = nn.MaxPool2d(2, 2)
-        self.conv2 = nn.Conv2d(6, 16, 5)
-        self.fc1 = nn.Linear(16 * 5 * 5, 120)
-        self.fc2 = nn.Linear(120, 84)
-        self.fc3 = nn.Linear(84, 10)
+        self.conv1 = nn.Conv2d(
+            in_channels,
+            out_channels,
+            kernel_size=3,
+            stride=stride,
+            padding=1,
+            bias=False,
+        )
+        self.bn1 = _make_norm_layer(out_channels, use_group_norm)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv2d(
+            out_channels,
+            out_channels,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+            bias=False,
+        )
+        self.bn2 = _make_norm_layer(out_channels, use_group_norm)
+
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(
+                    in_channels,
+                    out_channels,
+                    kernel_size=1,
+                    stride=stride,
+                    bias=False,
+                ),
+                _make_norm_layer(out_channels, use_group_norm),
+            )
+        else:
+            self.shortcut = nn.Sequential()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass of the CNN.
-
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input Tensor that will pass through the network
-
-        Returns
-        -------
-        torch.Tensor
-            The resulting Tensor after it has passed through the network
-        """
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = torch.flatten(x, 1)  # flatten all dimensions except batch
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = self.fc3(x)
-        return x
+        """Forward pass for the residual block."""
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out += self.shortcut(x)
+        out = self.relu(out)
+        return out
 
 
 class NetCifarResnet18(nn.Module):
@@ -75,22 +98,60 @@ class NetCifarResnet18(nn.Module):
         super().__init__()
         self.num_classes = num_classes
         self.device = device
-        # As the LEAF people do
-        # self.net = resnet18(num_classes=10, norm_layer=lambda x: nn.GroupNorm(2, x))
-        self.net = resnet18(num_classes=self.num_classes)
-        # replace w/ smaller input layer
-        self.net.conv1 = nn.Conv2d(
+        self.use_group_norm = groupnorm
+        self.in_channels = 64
+
+        self.conv1 = nn.Conv2d(
             3, 64, kernel_size=3, stride=1, padding=1, bias=False
         )
         nn.init.kaiming_normal_(
-            self.net.conv1.weight, mode="fan_out", nonlinearity="relu"
+            self.conv1.weight, mode="fan_out", nonlinearity="relu"
         )
-        # no need for pooling if training for CIFAR-10
-        self.net.maxpool = nn.Identity()
+        self.bn1 = _make_norm_layer(64, self.use_group_norm)
+        self.relu = nn.ReLU(inplace=True)
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+
+        self.layer1 = self._make_layer(64, num_blocks=2, stride=1)
+        self.layer2 = self._make_layer(128, num_blocks=2, stride=2)
+        self.layer3 = self._make_layer(256, num_blocks=2, stride=2)
+        self.layer4 = self._make_layer(512, num_blocks=2, stride=2)
+
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(512, num_classes)
+
+    def _make_layer(
+        self, out_channels: int, num_blocks: int, stride: int
+    ) -> nn.Sequential:
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers: list[nn.Module] = []
+        for current_stride in strides:
+            layers.append(
+                BasicBlock(
+                    self.in_channels,
+                    out_channels,
+                    current_stride,
+                    use_group_norm=self.use_group_norm,
+                )
+            )
+            self.in_channels = out_channels
+        return nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass."""
-        return self.net(x)
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+        out = self.maxpool(out)
+
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = self.layer4(out)
+
+        out = self.avgpool(out)
+        out = torch.flatten(out, 1)
+        out = self.fc(out)
+        return out
 
 
 # get_resnet18: NetGen = lazy_config_wrapper(NetCifarResnet18)

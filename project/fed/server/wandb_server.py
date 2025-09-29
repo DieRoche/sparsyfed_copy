@@ -57,6 +57,7 @@ class WandbServer(Server):
         self.history: History | None = history
         self.save_parameters_to_file = save_parameters_to_file
         self.save_files_per_round = save_files_per_round
+        self._last_upload_size_bytes: float | None = None
 
     # pylint: disable=too-many-locals
     def fit(
@@ -140,10 +141,18 @@ class WandbServer(Server):
                 download_traffic = active_clients * parameters_size_bytes(
                     self.parameters
                 )
-                upload_traffic = sum(
-                    parameters_size_bytes(fit_res.parameters)
-                    for _, fit_res in fit_results
-                )
+                if fit_results:
+                    on_wire_upload = parameters_size_bytes(
+                        fit_results[0][1].parameters
+                    )
+                    self._last_upload_size_bytes = float(on_wire_upload)
+                elif self._last_upload_size_bytes is not None:
+                    on_wire_upload = self._last_upload_size_bytes
+                else:
+                    on_wire_upload = parameters_size_bytes(self.parameters)
+                    self._last_upload_size_bytes = float(on_wire_upload)
+
+                upload_traffic = active_clients * float(on_wire_upload)
 
                 total_upload_traffic += upload_traffic
                 total_download_traffic += download_traffic
@@ -151,9 +160,17 @@ class WandbServer(Server):
                 if fit_metrics is None:
                     fit_metrics = {}
 
+                log(
+                    INFO,
+                    "Round %s upload size per client (bytes): %s",
+                    current_round,
+                    on_wire_upload,
+                )
+
                 fit_metrics.update({
                     "upload_traffic": float(upload_traffic),
                     "download_traffic": float(download_traffic),
+                    "upload_traffic_per_client": float(on_wire_upload),
                     "overall_traffic": float(
                         total_upload_traffic + total_download_traffic
                     ),
@@ -222,6 +239,9 @@ class WandbServer(Server):
                 metrics={
                     "upload_traffic": 0.0,
                     "download_traffic": 0.0,
+                    "upload_traffic_per_client": float(
+                        self._last_upload_size_bytes or 0.0
+                    ),
                     "overall_traffic": float(
                         total_upload_traffic + total_download_traffic
                     ),

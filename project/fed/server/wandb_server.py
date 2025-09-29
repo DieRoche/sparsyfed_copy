@@ -1,6 +1,5 @@
 """Flower server accounting for Weights&Biases+file saving."""
 
-import time
 import timeit
 from collections.abc import Callable
 from logging import INFO
@@ -123,12 +122,10 @@ class WandbServer(Server):
         for current_round in range(1, num_rounds + 1):
             # Train model and replace previous global model
             # prendere un timer sulla fit
-            timestamp = time.time()
             res_fit = self.fit_round(
                 server_round=current_round,
                 timeout=timeout,
             )
-            fit_round_time = time.time() - timestamp
 
             if res_fit is not None:
                 (
@@ -191,9 +188,6 @@ class WandbServer(Server):
                     server_round=current_round,
                     loss=loss_cen,
                 )
-                # mettere la metrica qui dentro centralized / round complition time
-                if isinstance(metrics_cen, dict):
-                    metrics_cen["fit_round_time"] = fit_round_time
                 history.add_metrics_centralized(
                     server_round=current_round,
                     metrics=metrics_cen,

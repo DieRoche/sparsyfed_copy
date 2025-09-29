@@ -79,7 +79,7 @@ class WandbHistory(History):
         super().add_loss_centralized(server_round, loss)
         if self.use_wandb:
             wandb.log(
-                {"centralised_loss": loss},
+                {"training_loss_highest": loss},
                 step=server_round,
             )
 

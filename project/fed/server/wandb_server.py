@@ -192,7 +192,8 @@ class WandbServer(Server):
                     loss=loss_cen,
                 )
                 # mettere la metrica qui dentro centralized / round complition time
-                metrics_cen["fit_round_time"] = fit_round_time
+                if isinstance(metrics_cen, dict):
+                    metrics_cen["fit_round_time"] = fit_round_time
                 history.add_metrics_centralized(
                     server_round=current_round,
                     metrics=metrics_cen,

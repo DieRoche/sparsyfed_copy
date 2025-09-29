@@ -117,9 +117,7 @@ def load_class_counts(
     for client_dir in client_dirs:
         file_path = client_dir / split_file
         if not file_path.exists():
-            raise FileNotFoundError(
-                f"Missing '{split_file}' in {client_dir!s}."
-            )
+            raise FileNotFoundError(f"Missing '{split_file}' in {client_dir!s}.")
 
         targets = _load_targets(file_path)
         if targets.size == 0:
@@ -171,7 +169,6 @@ def plot_distributions(
 
     for data, axis, title in heatmaps:
         mesh = axis.imshow(data, aspect="auto", cmap="viridis")
-        axis.set_xticks(range(num_classes), class_labels, rotation=45, ha="right")
         axis.set_yticks(range(num_clients), client_names)
         axis.set_title(title)
         axis.set_xlabel("Class")
@@ -193,7 +190,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--partition-dir",
         type=Path,
-        default=Path("data/CIFAR10/lda_0.5_10"),
+        default=Path("/data/CIFAR10/lda_0.5_10"),
         help="Path to the partition directory to be analysed.",
     )
     parser.add_argument(

@@ -140,8 +140,8 @@ class WandbServer(Server):
                 fit_results, failures = fit_results_and_failures
 
                 active_clients = len(fit_results) + len(failures)
-                download_traffic = (
-                    active_clients * parameters_size_bytes(self.parameters)
+                download_traffic = active_clients * parameters_size_bytes(
+                    self.parameters
                 )
                 upload_traffic = sum(
                     parameters_size_bytes(fit_res.parameters)
@@ -154,17 +154,13 @@ class WandbServer(Server):
                 if fit_metrics is None:
                     fit_metrics = {}
 
-                fit_metrics.update(
-                    {
-                        "upload_traffic": float(upload_traffic),
-                        "download_traffic": float(download_traffic),
-                        "total_upload_traffic": float(total_upload_traffic),
-                        "total_download_traffic": float(total_download_traffic),
-                        "overall_traffic": float(
-                            total_upload_traffic + total_download_traffic
-                        ),
-                    }
-                )
+                fit_metrics.update({
+                    "upload_traffic": float(upload_traffic),
+                    "download_traffic": float(download_traffic),
+                    "overall_traffic": float(
+                        total_upload_traffic + total_download_traffic
+                    ),
+                })
 
                 if parameters_prime:
                     self.parameters = parameters_prime
@@ -231,8 +227,6 @@ class WandbServer(Server):
                 metrics={
                     "upload_traffic": 0.0,
                     "download_traffic": 0.0,
-                    "total_upload_traffic": float(total_upload_traffic),
-                    "total_download_traffic": float(total_download_traffic),
                     "overall_traffic": float(
                         total_upload_traffic + total_download_traffic
                     ),

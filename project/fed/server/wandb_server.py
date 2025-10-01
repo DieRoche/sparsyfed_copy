@@ -1,6 +1,5 @@
 """Flower server accounting for Weights&Biases+file saving."""
 
-import time
 import timeit
 from collections.abc import Callable
 from logging import INFO
@@ -11,6 +10,9 @@ from flwr.server import Server
 from flwr.server.client_manager import ClientManager
 from flwr.server.history import History
 from flwr.server.strategy import Strategy
+
+from project.fed.utils.traffic import parameters_size_bytes
+from project.utils.utils import cleanup_memory
 
 
 class WandbServer(Server):
@@ -55,6 +57,7 @@ class WandbServer(Server):
         self.history: History | None = history
         self.save_parameters_to_file = save_parameters_to_file
         self.save_files_per_round = save_files_per_round
+        self._last_upload_size_bytes: float | None = None
 
     # pylint: disable=too-many-locals
     def fit(
@@ -113,22 +116,66 @@ class WandbServer(Server):
         self.save_parameters_to_file(self.parameters)
         self.save_files_per_round(0)
 
+        total_upload_traffic = 0.0
+        total_download_traffic = 0.0
+        last_logged_round: int | None = None
+
         for current_round in range(1, num_rounds + 1):
             # Train model and replace previous global model
             # prendere un timer sulla fit
-            timestamp = time.time()
             res_fit = self.fit_round(
                 server_round=current_round,
                 timeout=timeout,
             )
-            fit_round_time = time.time() - timestamp
 
             if res_fit is not None:
                 (
                     parameters_prime,
                     fit_metrics,
-                    _,
+                    fit_results_and_failures,
                 ) = res_fit  # fit_metrics_aggregated
+
+                fit_results, failures = fit_results_and_failures
+
+                active_clients = len(fit_results) + len(failures)
+                download_traffic = active_clients * parameters_size_bytes(
+                    self.parameters
+                )
+                if fit_results:
+                    on_wire_upload = parameters_size_bytes(
+                        fit_results[0][1].parameters
+                    )
+                    self._last_upload_size_bytes = float(on_wire_upload)
+                elif self._last_upload_size_bytes is not None:
+                    on_wire_upload = self._last_upload_size_bytes
+                else:
+                    on_wire_upload = parameters_size_bytes(self.parameters)
+                    self._last_upload_size_bytes = float(on_wire_upload)
+
+                upload_traffic = active_clients * float(on_wire_upload)
+
+                total_upload_traffic += upload_traffic
+                total_download_traffic += download_traffic
+
+                if fit_metrics is None:
+                    fit_metrics = {}
+
+                log(
+                    INFO,
+                    "Round %s upload size per client (bytes): %s",
+                    current_round,
+                    on_wire_upload,
+                )
+
+                fit_metrics.update({
+                    "upload_traffic": float(upload_traffic),
+                    "download_traffic": float(download_traffic),
+                    "upload_traffic_per_client": float(on_wire_upload),
+                    "overall_traffic": float(
+                        total_upload_traffic + total_download_traffic
+                    ),
+                })
+
                 if parameters_prime:
                     self.parameters = parameters_prime
                     # try to check the parameters sparsity here
@@ -137,6 +184,7 @@ class WandbServer(Server):
                     server_round=current_round,
                     metrics=fit_metrics,
                 )
+                last_logged_round = current_round
 
             # Evaluate model using strategy implementation
             res_cen = self.strategy.evaluate(
@@ -157,8 +205,6 @@ class WandbServer(Server):
                     server_round=current_round,
                     loss=loss_cen,
                 )
-                # mettere la metrica qui dentro centralized / round complition time
-                metrics_cen["fit_round_time"] = fit_round_time
                 history.add_metrics_centralized(
                     server_round=current_round,
                     metrics=metrics_cen,
@@ -185,6 +231,22 @@ class WandbServer(Server):
             # Saver round parameters and files
             self.save_parameters_to_file(self.parameters)
             self.save_files_per_round(current_round)
+            cleanup_memory()
+
+        if num_rounds > 0 and last_logged_round != num_rounds:
+            history.add_metrics_distributed_fit(
+                server_round=num_rounds,
+                metrics={
+                    "upload_traffic": 0.0,
+                    "download_traffic": 0.0,
+                    "upload_traffic_per_client": float(
+                        self._last_upload_size_bytes or 0.0
+                    ),
+                    "overall_traffic": float(
+                        total_upload_traffic + total_download_traffic
+                    ),
+                },
+            )
 
         # Bookkeeping
         end_time = timeit.default_timer()

@@ -10,6 +10,9 @@ from flwr.server.history import History
 import wandb
 
 
+EXCLUDED_METRICS = {"train_loss", "train_accuracy", "sparsity"}
+
+
 class WandbHistory(History):
     """History class for training and/or evaluation metrics collection."""
 
@@ -76,7 +79,7 @@ class WandbHistory(History):
         super().add_loss_centralized(server_round, loss)
         if self.use_wandb:
             wandb.log(
-                {"centralised_loss": loss},
+                {"training_loss_highest": loss},
                 step=server_round,
             )
 
@@ -104,6 +107,8 @@ class WandbHistory(History):
         )
         if self.use_wandb:
             for key in metrics:
+                if key in EXCLUDED_METRICS:
+                    continue
                 wandb.log(
                     {key: metrics[key]},
                     step=server_round,
@@ -133,6 +138,8 @@ class WandbHistory(History):
         )
         if self.use_wandb:
             for key in metrics:
+                if key in EXCLUDED_METRICS:
+                    continue
                 if key == "test_accuracy":
                     key_name = "distributed_test_accuracy"
                 else:
@@ -166,6 +173,8 @@ class WandbHistory(History):
         )
         if self.use_wandb:
             for key in metrics:
+                if key in EXCLUDED_METRICS:
+                    continue
                 if key == "test_accuracy":
                     key_name = "acc_servers_highest"
                 else:

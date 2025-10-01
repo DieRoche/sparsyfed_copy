@@ -23,7 +23,7 @@ to_save_once: [history, yaml, log]
 to_save_per_round: [parameters]
 
 # The frequency with which they should be saved
-save_frequency: 50
+save_frequency: 10
 
 # List of flie patterns to be deleted
 # prior to and at the end of training from working_dir
@@ -57,6 +57,7 @@ wandb:
 ray_address: null
 ray_redis_password: null
 ray_node_ip_address: null
+ray_local_mode: false
 
 # When using checkpointing
 # automatically detect the most recent checkpoint

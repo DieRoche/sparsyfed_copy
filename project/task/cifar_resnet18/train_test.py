@@ -25,10 +25,7 @@ from project.task.default.train_test import (
 from project.task.default.train_test import (
     get_on_fit_config_fn as get_default_on_fit_config_fn,
 )
-from project.task.cifar_resnet18.models import (
-    get_parameters_to_prune,
-    set_spectral_global_exponent,
-)
+from project.task.cifar_resnet18.models import get_parameters_to_prune
 
 bounds = [(0, 40), (40, 70), (70, 100)]
 sparsities: list[float] = []
@@ -464,12 +461,6 @@ def test(
     net.to(config.device)
     net.eval()
 
-    # SPECTRAL EXPONENT
-    # <---
-    avg_exponent = set_spectral_global_exponent(net, False)
-    # log(logging.INFO, f"[test] Average spectral exponent: {avg_exponent}")
-    # --->
-
     # get the global model
 
     # Evaluate the dense model first
@@ -548,8 +539,6 @@ def test(
         sparse_loss[f"loss_{sparsity}"] = per_sample_loss / len(
             cast(Sized, testloader.dataset)
         )
-
-    sparse_accuracy["exponent"] = avg_exponent
 
     return (
         sparse_loss["loss"],

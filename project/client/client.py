@@ -3,11 +3,12 @@
 Make sure the model and dataset are not loaded before the fit function.
 """
 
-import math
+import json
 from pathlib import Path
 
 
 import flwr as fl
+import numpy as np
 from flwr.common import NDArrays
 from pydantic import BaseModel
 from torch import nn
@@ -28,7 +29,7 @@ from project.types.common import (
     TestFunc,
     TrainFunc,
 )
-from project.utils.utils import obtain_device
+from project.utils.utils import cleanup_memory, obtain_device
 
 
 class ClientConfig(BaseModel):
@@ -52,63 +53,6 @@ class ClientConfig(BaseModel):
         """Setting to allow any types, including library ones like torch.device."""
 
         arbitrary_types_allowed = True
-
-
-class LRScheduler:
-    """Learning rate scheduler with warmup and exponential decay."""
-
-    def __init__(
-        self,
-        initial_lr: float,
-        final_lr: float,
-        total_rounds: int = 700,
-        warmup_rounds: int = 0,
-    ) -> None:
-        """Initialize the learning rate scheduler.
-
-        Parameters
-        ----------
-        initial_lr : float
-            Initial learning rate value
-        final_lr : float
-            Final learning rate value
-        total_rounds : int, optional
-            Total number of rounds, by default 700
-        warmup_rounds : int, optional
-            Number of warmup rounds where LR stays at initial value, by default 0
-        """
-        self.initial_lr = initial_lr
-        self.final_lr = final_lr
-        self.total_rounds = total_rounds
-        self.warmup_rounds = warmup_rounds
-
-        # Pre-compute the log ratio for the exponential decay
-        self.log_ratio = math.log(self.final_lr / self.initial_lr)
-
-    def __call__(self, curr_round: int) -> float:
-        """Get the learning rate for the current round.
-
-        Parameters
-        ----------
-        curr_round : int
-            Current round number
-
-        Returns
-        -------
-        float
-            Learning rate for the current round
-        """
-        # During warmup, return initial learning rate
-        if curr_round < self.warmup_rounds:
-            return self.initial_lr
-
-        # After warmup, apply exponential decay
-        # Adjust the round number to account for warmup period
-        adjusted_round = curr_round - self.warmup_rounds
-        adjusted_total = self.total_rounds - self.warmup_rounds
-
-        exponential_term = (adjusted_round / adjusted_total) * self.log_ratio
-        return self.initial_lr * math.exp(exponential_term)
 
 
 class Client(fl.client.NumPyClient):
@@ -197,34 +141,67 @@ class Client(fl.client.NumPyClient):
             config.dataloader_config,
         )
 
-        # Create the scheduler
-        scheduler = LRScheduler(
-            initial_lr=config.run_config["learning_rate"],
-            final_lr=config.run_config["final_learning_rate"],
-            total_rounds=config.run_config["tot_rounds"],
-            warmup_rounds=config.run_config["warmup_rounds"],
-        )
-        # Update the learning rate
-        config.run_config["learning_rate"] = scheduler(config.run_config["curr_round"])
+        try:
+            config.run_config["cid"] = self.cid
 
-        config.run_config["cid"] = self.cid
+            num_samples, metrics = self.train(
+                self.net,
+                trainloader,
+                config.run_config,
+                self.working_dir,
+            )
 
-        num_samples, metrics = self.train(
-            self.net,
-            trainloader,
-            config.run_config,
-            self.working_dir,
-        )
+            metrics["learning_rate"] = config.run_config["learning_rate"]
 
-        metrics["learning_rate"] = config.run_config["learning_rate"]
+            updated_parameters = generic_get_parameters(self.net)
 
-        updated_parameters = generic_get_parameters(self.net)
+            updates_dir_raw = config.extra.get("client_updates_dir")
+            if updates_dir_raw:
+                updates_dir = Path(updates_dir_raw)
+                updates_dir.mkdir(parents=True, exist_ok=True)
+                base_name = (
+                    f"client_{self.cid}_round_{config.extra['curr_round']}"
+                )
+                np.savez_compressed(
+                    updates_dir / f"{base_name}.npz",
+                    *updated_parameters,
+                )
 
-        return (
-            updated_parameters,
-            num_samples,
-            metrics,
-        )
+                metrics_to_store: dict[str, float | int | str | bool] = {}
+                for key, value in metrics.items():
+                    if isinstance(value, (np.floating, float)):
+                        metrics_to_store[key] = float(value)
+                    elif isinstance(value, (np.integer, int)):
+                        metrics_to_store[key] = int(value)
+                    elif isinstance(value, (np.bool_, bool)):
+                        metrics_to_store[key] = bool(value)
+                    else:
+                        metrics_to_store[key] = value
+
+                with open(
+                    updates_dir / f"{base_name}.json",
+                    "w",
+                    encoding="utf-8",
+                ) as meta_file:
+                    json.dump(
+                        {
+                            "num_samples": int(num_samples),
+                            "metrics": metrics_to_store,
+                        },
+                        meta_file,
+                    )
+
+            return (
+                updated_parameters,
+                num_samples,
+                metrics,
+            )
+        finally:
+            trainloader = None
+            if self.net is not None:
+                self.net.to("cpu")
+                self.net = None
+            cleanup_memory()
 
     def evaluate(
         self,
@@ -267,22 +244,29 @@ class Client(fl.client.NumPyClient):
             config.dataloader_config,
         )
 
-        loss, num_samples, metrics = self.test(
-            self.net,
-            testloader,
-            config.run_config,
-            self.working_dir,
-        )
+        try:
+            loss, num_samples, metrics = self.test(
+                self.net,
+                testloader,
+                config.run_config,
+                self.working_dir,
+            )
 
-        self.net = self.set_parameters(
-            parameters,
-            config.net_config,
-        )
+            self.net = self.set_parameters(
+                parameters,
+                config.net_config,
+            )
 
-        metrics["sparsity"] = sparsity
-        metrics["cid"] = self.cid
+            metrics["sparsity"] = sparsity
+            metrics["cid"] = self.cid
 
-        return loss, num_samples, metrics
+            return loss, num_samples, metrics
+        finally:
+            testloader = None
+            if self.net is not None:
+                self.net.to("cpu")
+                self.net = None
+            cleanup_memory()
 
     def get_parameters(self, config: dict) -> NDArrays:
         """Obtain client parameters.

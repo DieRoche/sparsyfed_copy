@@ -3,6 +3,7 @@
 Generic utilities.
 """
 
+import gc
 import logging
 import random
 import re
@@ -19,6 +20,14 @@ import torch
 from flwr.common.logger import log
 
 import wandb
+
+
+def cleanup_memory() -> None:
+    """Release cached GPU memory and trigger Python garbage collection."""
+
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def obtain_device() -> torch.device:

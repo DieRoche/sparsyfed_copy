@@ -274,6 +274,8 @@ def main(cfg: DictConfig) -> None:
                 save_parameters_to_file=save_parameters_to_file,
                 save_files_per_round=save_files_per_round,
             )
+            # Ensure clients are scheduled sequentially to avoid Ray resource limits
+            server.max_workers = 1
 
             # Client generation function for Ray
             # Do not change
@@ -307,6 +309,25 @@ def main(cfg: DictConfig) -> None:
             # If multiple ray servers run in parallel
             # you should provide them from wherever
             # you start your server (e.g., sh script)
+            ray_init_args = {
+                "num_gpus": 1.0,
+                "include_dashboard": False,
+            }
+
+            if getattr(cfg, "ray_local_mode", False):
+                # Execute Ray tasks in the same process to reduce memory usage
+                # when simulating with a single worker.
+                ray_init_args["local_mode"] = True
+
+            if cfg.ray_address is not None:
+                ray_init_args.update(
+                    {
+                        "address": cfg.ray_address,
+                        "_redis_password": cfg.ray_redis_password,
+                        "_node_ip_address": cfg.ray_node_ip_address,
+                    }
+                )
+
             fl.simulation.start_simulation(
                 client_fn=client_generator,
                 num_clients=cfg.fed.num_total_clients,
@@ -322,17 +343,7 @@ def main(cfg: DictConfig) -> None:
                 config=fl.server.ServerConfig(
                     num_rounds=cfg.fed.num_rounds,
                 ),
-                ray_init_args=(
-                    {
-                        "num_gpus": 1.0,
-                        "include_dashboard": False,
-                        "address": cfg.ray_address,
-                        "_redis_password": cfg.ray_redis_password,
-                        "_node_ip_address": cfg.ray_node_ip_address,
-                    }
-                    if cfg.ray_address is not None
-                    else {"num_gpus": 1.0, "include_dashboard": False}
-                ),
+                ray_init_args=ray_init_args,
             )
 
             # Make a dir for the histories

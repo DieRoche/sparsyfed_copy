@@ -12,7 +12,7 @@ model_and_data: CIFAR_SPARSYFED_RN18
 train_structure: CIFAR_RN18_PRUNE
 # train_structure: CIFAR_RN18_FIX_PRUNE
 
-alpha: 1
+alpha: 1.25
 sparsity: 0.90
 mask: 0.0
 
@@ -22,15 +22,15 @@ fit_config:
   net_config: {}
   # Dataloader requires batch_size
   dataloader_config:
-    batch_size: 16
+    batch_size: 128
   # The train function requires epochs and learning_rate
   run_config:
     epochs: 5
-    learning_rate: 0.5
+    learning_rate: 0.01
     final_learning_rate: 0.01
     warmup_rounds: 0
     warmup: 0
-    tot_rounds: 10
+    tot_rounds: 100
   extra: {window_training: false, in_out_eval: false, mask: false, noise: 0}
 
 # Client eval config
@@ -38,7 +38,7 @@ eval_config:
   net_config: {}
   # The testing function batch size can be as high as the GPU supports
   dataloader_config:
-    batch_size: 64
+    batch_size: 128
   # Unlike train, the mnist train function takes no parameters?
   run_config: {}
   extra: {window_training: false, mask: false}
@@ -49,7 +49,7 @@ fed_test_config:
   net_config: {}
   # The testing function batch size can be as high as the GPU supports
   dataloader_config:
-    batch_size: 64
+    batch_size: 128
   # Unlike train, the mnist train function takes no parameters?
   run_config: {}
   extra: {}
@@ -59,7 +59,7 @@ fed_test_config:
 net_config_initial_parameters: {}
 
 # The names of metrics you wish to aggregate
-fit_metrics: [train_loss, train_accuracy, learning_rate]
+fit_metrics: []
 
 evaluate_metrics:
   - test_accuracy
@@ -70,4 +70,3 @@ evaluate_metrics:
   # - test_accuracy_0.995
   # - test_accuracy_0.999
   - sparsity
-  - exponent

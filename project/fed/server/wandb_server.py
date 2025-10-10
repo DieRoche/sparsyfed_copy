@@ -3,11 +3,13 @@
 import timeit
 from collections.abc import Callable
 from logging import INFO
+from numbers import Number
 
-from flwr.common import Parameters
+from flwr.common import FitRes, Parameters
 from flwr.common.logger import log
 from flwr.server import Server
 from flwr.server.client_manager import ClientManager
+from flwr.server.client_proxy import ClientProxy
 from flwr.server.history import History
 from flwr.server.strategy import Strategy
 
@@ -58,6 +60,13 @@ class WandbServer(Server):
         self.save_parameters_to_file = save_parameters_to_file
         self.save_files_per_round = save_files_per_round
         self._last_upload_size_bytes: float | None = None
+        self._flop_totals: dict[str, float] = {
+            "total_flops": 0.0,
+            "total_flops_including_compression": 0.0,
+            "total_flops_decompression": 0.0,
+            "total_flops_compression": 0.0,
+        }
+        self._flop_metrics_available = False
 
     # pylint: disable=too-many-locals
     def fit(
@@ -176,6 +185,11 @@ class WandbServer(Server):
                     ),
                 })
 
+                self._update_flop_metrics(
+                    fit_results,
+                    fit_metrics,
+                )
+
                 if parameters_prime:
                     self.parameters = parameters_prime
                     # try to check the parameters sparsity here
@@ -234,18 +248,39 @@ class WandbServer(Server):
             cleanup_memory()
 
         if num_rounds > 0 and last_logged_round != num_rounds:
+            fallback_metrics: dict[str, float] = {
+                "upload_traffic": 0.0,
+                "download_traffic": 0.0,
+                "upload_traffic_per_client": float(
+                    self._last_upload_size_bytes or 0.0
+                ),
+                "overall_traffic": float(
+                    total_upload_traffic + total_download_traffic
+                ),
+            }
+
+            if self._flop_metrics_available:
+                fallback_metrics.update(
+                    {
+                        "round_flops": 0.0,
+                        "round_flops_compression": 0.0,
+                        "round_flops_decompression": 0.0,
+                        "total_flops": self._flop_totals["total_flops"],
+                        "total_flops_compression": self._flop_totals[
+                            "total_flops_compression"
+                        ],
+                        "total_flops_decompression": self._flop_totals[
+                            "total_flops_decompression"
+                        ],
+                        "total_flops_including_compression": self._flop_totals[
+                            "total_flops_including_compression"
+                        ],
+                    }
+                )
+
             history.add_metrics_distributed_fit(
                 server_round=num_rounds,
-                metrics={
-                    "upload_traffic": 0.0,
-                    "download_traffic": 0.0,
-                    "upload_traffic_per_client": float(
-                        self._last_upload_size_bytes or 0.0
-                    ),
-                    "overall_traffic": float(
-                        total_upload_traffic + total_download_traffic
-                    ),
-                },
+                metrics=fallback_metrics,
             )
 
         # Bookkeeping
@@ -253,3 +288,57 @@ class WandbServer(Server):
         elapsed = end_time - start_time
         log(INFO, "FL finished in %s", elapsed)
         return history
+
+    def _update_flop_metrics(
+        self,
+        fit_results: list[tuple[ClientProxy, FitRes]],
+        fit_metrics: dict[str, float | int | bool | str],
+    ) -> None:
+        """Update per-round and cumulative FLOP metrics.
+
+        Parameters
+        ----------
+        fit_results : list[tuple[ClientProxy, FitRes]]
+            The successful fit results for the current round.
+        fit_metrics : dict[str, float | int | bool | str]
+            The aggregated metrics dictionary for the round.
+        """
+
+        flop_round_keys = (
+            "round_flops",
+            "round_flops_compression",
+            "round_flops_decompression",
+        )
+
+        round_values = {key: 0.0 for key in flop_round_keys}
+        values_found = False
+
+        for _, fit_res in fit_results:
+            metrics = getattr(fit_res, "metrics", None) or {}
+            for key in flop_round_keys:
+                value = metrics.get(key)
+                if isinstance(value, Number):
+                    round_values[key] += float(value)
+                    values_found = True
+
+        if not values_found:
+            return
+
+        self._flop_metrics_available = True
+
+        fit_metrics.update(round_values)
+
+        self._flop_totals["total_flops"] += round_values["round_flops"]
+        self._flop_totals["total_flops_compression"] += round_values[
+            "round_flops_compression"
+        ]
+        self._flop_totals["total_flops_decompression"] += round_values[
+            "round_flops_decompression"
+        ]
+        self._flop_totals["total_flops_including_compression"] += (
+            round_values["round_flops"]
+            + round_values["round_flops_compression"]
+            + round_values["round_flops_decompression"]
+        )
+
+        fit_metrics.update(self._flop_totals)

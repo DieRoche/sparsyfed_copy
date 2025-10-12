@@ -4,6 +4,7 @@ Make sure the model and dataset are not loaded before the fit function.
 """
 
 import json
+import math
 from pathlib import Path
 
 
@@ -11,10 +12,12 @@ import flwr as fl
 import numpy as np
 from flwr.common import NDArrays
 from pydantic import BaseModel
+import torch
 from torch import nn
 
 from project.fed.utils.utils import (
     count_nonzero_elements,
+    estimate_forward_flops,
     generic_get_parameters,
     generic_set_parameters,
     get_nonzeros,
@@ -59,6 +62,102 @@ class ClientConfig(BaseModel):
 class Client(fl.client.NumPyClient):
     """Virtual client for ray."""
 
+    _BACKWARD_MULTIPLIER = 2.0
+    _OPTIMIZER_COST = 2.0
+    _FLOP_SAMPLE_SHAPE = (128, 3, 32, 32)
+
+    def _get_dense_forward_flops(
+        self,
+        device: torch.device,
+    ) -> float:
+        """Return (and cache) per-sample dense forward FLOPs for the model."""
+
+        if self.net is None:
+            return 0.0
+
+        if (
+            self._dense_forward_flops_per_sample is not None
+            and self._dense_forward_flops_device == device.type
+        ):
+            return self._dense_forward_flops_per_sample
+
+        first_param = next(self.net.parameters(), None)
+        if first_param is None:
+            return 0.0
+
+        dtype = first_param.dtype
+        sample_input = torch.randn(
+            self._FLOP_SAMPLE_SHAPE,
+            device=device,
+            dtype=dtype,
+        )
+        flops = estimate_forward_flops(self.net, sample_input, device)
+        if flops <= 0.0:
+            return 0.0
+
+        self._dense_forward_flops_per_sample = flops
+        self._dense_forward_flops_device = device.type
+        return flops
+
+    def _estimate_round_flops(
+        self,
+        num_samples: int,
+        num_batches: int,
+        batch_size: int,
+        epochs: int,
+        server_nonzero_count: int,
+        client_nonzero_count: int,
+        total_param_count: int,
+        device: torch.device,
+    ) -> float:
+        """Estimate the floating-point operations executed during local training.
+
+        The estimate uses a dense forward-pass FLOP profile scaled by the
+        effective density of the sparse parameters. The forward cost is inflated
+        by ``1 + _BACKWARD_MULTIPLIER`` to approximate the backward pass and an
+        additional optimizer cost is included for the active parameters. The
+        resulting per-step cost is multiplied by the number of steps per epoch
+        and by the number of epochs processed in the round.
+        """
+
+        if (
+            epochs <= 0
+            or batch_size <= 0
+            or total_param_count <= 0
+            or server_nonzero_count < 0
+            or client_nonzero_count < 0
+        ):
+            return 0.0
+
+        steps_per_epoch = 0
+        if num_samples > 0 and batch_size > 0:
+            steps_per_epoch = max(math.ceil(num_samples / batch_size), 1)
+        elif num_batches > 0:
+            steps_per_epoch = num_batches
+
+        if steps_per_epoch <= 0:
+            return 0.0
+
+        avg_active_params = (
+            float(server_nonzero_count) + float(client_nonzero_count)
+        ) / 2.0
+        if avg_active_params <= 0.0:
+            return 0.0
+
+        dense_forward_flops = self._get_dense_forward_flops(device)
+        if dense_forward_flops <= 0.0:
+            return 0.0
+
+        density = min(max(avg_active_params / float(total_param_count), 0.0), 1.0)
+        sparse_forward_flops = density * dense_forward_flops
+
+        per_step_flops = (
+            batch_size * sparse_forward_flops * (1.0 + self._BACKWARD_MULTIPLIER)
+            + self._OPTIMIZER_COST * avg_active_params
+        )
+
+        return float(epochs * steps_per_epoch * per_step_flops)
+
     def __init__(
         self,
         cid: int | str,
@@ -99,6 +198,8 @@ class Client(fl.client.NumPyClient):
         self.train = train
         self.test = test
         self.fed_dataloader_gen = fed_dataloader_gen
+        self._dense_forward_flops_per_sample: float | None = None
+        self._dense_forward_flops_device: str | None = None
 
     def fit(
         self,
@@ -161,6 +262,42 @@ class Client(fl.client.NumPyClient):
                 updated_parameters
             )
 
+            try:
+                num_batches = len(trainloader)
+            except TypeError:
+                num_batches = 0
+
+            loader_batch_size = getattr(trainloader, "batch_size", None)
+            if not isinstance(loader_batch_size, int) or loader_batch_size <= 0:
+                loader_batch_size = config.dataloader_config.get("batch_size")
+            if not isinstance(loader_batch_size, int) or loader_batch_size <= 0:
+                if isinstance(num_batches, int) and num_batches > 0:
+                    loader_batch_size = max(
+                        math.ceil(float(num_samples) / float(num_batches)),
+                        1,
+                    )
+                else:
+                    loader_batch_size = max(int(num_samples), 1)
+
+            if not isinstance(num_batches, int) or num_batches <= 0:
+                num_batches = max(
+                    math.ceil(float(num_samples) / float(loader_batch_size)),
+                    1,
+                )
+
+            epochs = int(config.run_config.get("epochs", 1))
+            device = torch.device(config.run_config["device"])
+            round_flops = self._estimate_round_flops(
+                int(num_samples),
+                num_batches,
+                int(loader_batch_size),
+                epochs,
+                server_nonzero_count,
+                client_nonzero_count,
+                server_total_count,
+                device,
+            )
+
             metrics["server_to_client_nonzero"] = float(server_nonzero_count)
             metrics["server_to_client_density"] = (
                 float(server_nonzero_count) / float(server_total_count)
@@ -176,6 +313,9 @@ class Client(fl.client.NumPyClient):
             metrics["nonzero_communication_total"] = float(
                 server_nonzero_count + client_nonzero_count
             )
+            metrics["round_flops"] = round_flops
+            metrics.setdefault("round_flops_compression", 0.0)
+            metrics.setdefault("round_flops_decompression", 0.0)
 
             updates_dir_raw = config.extra.get("client_updates_dir")
             if updates_dir_raw:

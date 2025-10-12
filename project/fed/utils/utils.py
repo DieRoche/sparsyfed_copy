@@ -6,11 +6,14 @@ from collections import OrderedDict, defaultdict
 from collections.abc import Callable
 from pathlib import Path
 
+from numbers import Number
+
 import torch.nn.functional as F
 
 import numpy as np
 
 import torch
+from torch.profiler import ProfilerActivity, profile
 from flwr.common import (
     NDArrays,
     Parameters,
@@ -21,6 +24,26 @@ from flwr.common import (
 from torch import nn
 
 from project.types.common import ClientGen, NetGen, OnEvaluateConfigFN, OnFitConfigFN
+
+
+DEFAULT_SUM_METRICS = frozenset(
+    {
+        "server_to_client_nonzero",
+        "client_to_server_nonzero",
+        "nonzero_communication_total",
+        "round_flops",
+        "round_flops_compression",
+        "round_flops_decompression",
+    }
+)
+
+DEFAULT_AVG_METRICS = frozenset(
+    {
+        "server_to_client_density",
+        "client_to_server_density",
+        "learning_rate",
+    }
+)
 
 
 def generic_set_parameters(
@@ -122,6 +145,68 @@ def load_parameters_from_file(path: Path) -> Parameters:
         )
 
     raise ValueError(f"Unknown parameter format: {path}")
+
+
+def estimate_forward_flops(
+    model: nn.Module,
+    sample_input: torch.Tensor,
+    device: torch.device | str,
+) -> float:
+    """Estimate the dense forward-pass FLOPs per sample for a model.
+
+    Parameters
+    ----------
+    model : nn.Module
+        The model to profile.
+    sample_input : torch.Tensor
+        A representative batch of inputs. The returned FLOP count will be
+        normalised by the batch dimension to obtain a per-sample value.
+    device : torch.device | str
+        Device on which to execute the forward pass.
+
+    Returns
+    -------
+    float
+        Estimated forward FLOPs per input sample. Returns ``0.0`` if profiling
+        fails or produces no FLOP information.
+    """
+
+    if sample_input.ndim == 0:
+        return 0.0
+
+    device_obj = torch.device(device)
+
+    was_training = model.training
+    model.to(device_obj)
+    model.eval()
+
+    sample = sample_input.to(device_obj)
+
+    activities = [ProfilerActivity.CPU]
+    if device_obj.type == "cuda":
+        activities.append(ProfilerActivity.CUDA)
+
+    try:
+        with torch.no_grad():
+            with profile(activities=activities, with_flops=True) as prof:
+                model(sample)
+        total_flops = 0.0
+        for event in prof.key_averages():
+            if event.flops is not None:
+                total_flops += float(event.flops)
+    except Exception as exc:  # pragma: no cover - best effort guard
+        log(
+            logging.WARNING,
+            "Unable to estimate forward FLOPs: %s",  # type: ignore[str-bytes-safe]
+            exc,
+        )
+        total_flops = 0.0
+    finally:
+        if was_training:
+            model.train()
+
+    batch_size = max(int(sample.shape[0]), 1)
+    return float(total_flops / batch_size) if total_flops > 0.0 else 0.0
 
 
 def get_initial_parameters(
@@ -281,8 +366,12 @@ def get_weighted_avg_metrics_agg_fn(
             [num_examples for num_examples, _ in metrics],
         )
         weighted_metrics: dict = defaultdict(float)
+        sum_metrics: dict = defaultdict(float)
         min_test_acc: float | None = None
         max_test_acc: float | None = None
+
+        metrics_to_average = set(to_agg) | set(DEFAULT_AVG_METRICS)
+        metrics_to_sum = set(DEFAULT_SUM_METRICS)
 
         for num_examples, metric in metrics:
             test_acc = metric.get("test_accuracy")
@@ -293,12 +382,27 @@ def get_weighted_avg_metrics_agg_fn(
                     max_test_acc = float(test_acc)
 
             for key, value in metric.items():
-                if key in to_agg:
-                    weighted_metrics[key] += num_examples * value
+                if not isinstance(value, Number):
+                    continue
+                if key in metrics_to_sum:
+                    sum_metrics[key] += float(value)
+                    continue
+                if key in metrics_to_average:
+                    weighted_metrics[key] += num_examples * float(value)
 
-        aggregated_metrics = {
-            key: value / total_num_examples for key, value in weighted_metrics.items()
-        }
+        aggregated_metrics: dict[str, float] = {}
+
+        if total_num_examples > 0:
+            aggregated_metrics.update(
+                {
+                    key: value / total_num_examples
+                    for key, value in weighted_metrics.items()
+                }
+            )
+        else:
+            aggregated_metrics.update({key: 0.0 for key in weighted_metrics})
+
+        aggregated_metrics.update(sum_metrics)
 
         if min_test_acc is not None and max_test_acc is not None:
             aggregated_metrics["acc_clients_lowest"] = min_test_acc

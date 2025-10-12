@@ -77,6 +77,18 @@ def generic_get_parameters(net: nn.Module) -> NDArrays:
     return parameters
 
 
+def count_nonzero_elements(weights: NDArrays) -> tuple[int, int]:
+    """Return the number of non-zero and total elements in a list of arrays."""
+
+    nonzero = 0
+    total = 0
+    for layer in weights:
+        nonzero += int(np.count_nonzero(layer))
+        total += int(layer.size)
+
+    return nonzero, total
+
+
 def load_parameters_from_file(path: Path) -> Parameters:
     """Load parameters from a binary file.
 

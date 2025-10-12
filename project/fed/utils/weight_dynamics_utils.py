@@ -1,10 +1,13 @@
 """Utility functions for tracking and analyzing weight dynamics in FL."""
 
+import logging
 from typing import NamedTuple
+
 import numpy as np
 from flwr.common import NDArrays
 from flwr.common.logger import log
-import logging
+
+from project.fed.utils.utils import count_nonzero_elements
 
 
 class ClientSimilarityStats(NamedTuple):
@@ -38,6 +41,7 @@ class WeightDynamicsTracker:
         """Initialize the weight dynamics tracker."""
         # Store initial weights from start of training
         self.initial_weights: NDArrays | None = None
+        self.round_start_weights: NDArrays | None = None
 
         # Track history of metrics for trend analysis
         self.round_history: list[dict] = []
@@ -199,16 +203,26 @@ class WeightDynamicsTracker:
             )
 
         # Compute L2 distance for current round
-        metrics["round_l2_distance"] = self.compute_l2_distance(
-            self.round_start_weights, current_weights
-        )
+        if self.round_start_weights is not None:
+            metrics["round_l2_distance"] = self.compute_l2_distance(
+                self.round_start_weights, current_weights
+            )
+        else:
+            metrics["round_l2_distance"] = 0.0
 
         # Compute cosine similarity between round start and end
-        metrics["round_cosine_similarity"] = self.compute_cosine_similarity(
-            self.round_start_weights, current_weights
-        )
+        if self.round_start_weights is not None:
+            metrics["round_cosine_similarity"] = self.compute_cosine_similarity(
+                self.round_start_weights, current_weights
+            )
+        else:
+            metrics["round_cosine_similarity"] = 0.0
 
         # Get client similarity metrics if we have updates
+        total_nonzero_client = 0
+        total_elements_client = 0
+        num_client_updates = len(client_updates)
+
         if client_updates:
             similarity_stats = self.compute_pairwise_client_similarities(client_updates)
             self.similarity_history.append(similarity_stats)
@@ -220,6 +234,44 @@ class WeightDynamicsTracker:
                 "client_similarity_std": similarity_stats.std,
             }
             metrics.update(similarity_metrics)
+
+            for update in client_updates:
+                nonzero_count, total_count = count_nonzero_elements(update)
+                total_nonzero_client += nonzero_count
+                total_elements_client += total_count
+
+            metrics["client_to_server_nonzero_total"] = float(total_nonzero_client)
+            metrics["client_to_server_nonzero_mean"] = (
+                float(total_nonzero_client) / float(num_client_updates)
+                if num_client_updates
+                else 0.0
+            )
+            metrics["client_to_server_density_mean"] = (
+                float(total_nonzero_client) / float(total_elements_client)
+                if total_elements_client
+                else 0.0
+            )
+
+        round_start = self.round_start_weights
+        if round_start is not None:
+            server_nonzero_count, server_total_count = count_nonzero_elements(round_start)
+            metrics["server_to_client_nonzero_per_client"] = float(server_nonzero_count)
+            metrics["server_to_client_density"] = (
+                float(server_nonzero_count) / float(server_total_count)
+                if server_total_count
+                else 0.0
+            )
+
+            if num_client_updates:
+                server_total_transmitted = server_nonzero_count * num_client_updates
+                metrics["server_to_client_nonzero_total"] = float(
+                    server_total_transmitted
+                )
+                metrics["nonzero_communication_total"] = float(
+                    server_total_transmitted + total_nonzero_client
+                )
+        elif num_client_updates:
+            metrics.setdefault("nonzero_communication_total", float(total_nonzero_client))
 
         # Store metrics for history
         self.round_history.append(metrics)

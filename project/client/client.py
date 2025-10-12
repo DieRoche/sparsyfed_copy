@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from torch import nn
 
 from project.fed.utils.utils import (
+    count_nonzero_elements,
     generic_get_parameters,
     generic_set_parameters,
     get_nonzeros,
@@ -133,6 +134,8 @@ class Client(fl.client.NumPyClient):
             config.net_config,
         )
 
+        server_nonzero_count, server_total_count = count_nonzero_elements(parameters)
+
         del parameters
 
         trainloader = self.dataloader_gen(
@@ -154,6 +157,25 @@ class Client(fl.client.NumPyClient):
             metrics["learning_rate"] = config.run_config["learning_rate"]
 
             updated_parameters = generic_get_parameters(self.net)
+            client_nonzero_count, client_total_count = count_nonzero_elements(
+                updated_parameters
+            )
+
+            metrics["server_to_client_nonzero"] = float(server_nonzero_count)
+            metrics["server_to_client_density"] = (
+                float(server_nonzero_count) / float(server_total_count)
+                if server_total_count
+                else 0.0
+            )
+            metrics["client_to_server_nonzero"] = float(client_nonzero_count)
+            metrics["client_to_server_density"] = (
+                float(client_nonzero_count) / float(client_total_count)
+                if client_total_count
+                else 0.0
+            )
+            metrics["nonzero_communication_total"] = float(
+                server_nonzero_count + client_nonzero_count
+            )
 
             updates_dir_raw = config.extra.get("client_updates_dir")
             if updates_dir_raw:

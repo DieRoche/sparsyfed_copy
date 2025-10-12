@@ -67,6 +67,7 @@ class WandbServer(Server):
             "total_flops_compression": 0.0,
         }
         self._flop_metrics_available = False
+        self._missing_flop_metrics_warned = False
 
     # pylint: disable=too-many-locals
     def fit(
@@ -322,9 +323,24 @@ class WandbServer(Server):
                     values_found = True
 
         if not values_found:
+            if not self._missing_flop_metrics_warned:
+                log(
+                    INFO,
+                    (
+                        "No client FLOP metrics were provided; reporting zero "
+                        "values in WandB. Ensure clients populate 'round_flops', "
+                        "'round_flops_compression', and 'round_flops_decompression'"
+                    ),
+                )
+                self._missing_flop_metrics_warned = True
+
+            zero_metrics: dict[str, float] = {key: 0.0 for key in flop_round_keys}
+            zero_metrics.update(self._flop_totals)
+            fit_metrics.update(zero_metrics)
             return
 
         self._flop_metrics_available = True
+        self._missing_flop_metrics_warned = False
 
         fit_metrics.update(round_values)
 

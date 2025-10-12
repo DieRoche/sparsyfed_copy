@@ -188,7 +188,11 @@ def estimate_forward_flops(
 
     try:
         with torch.no_grad():
-            with profile(activities=activities, with_flops=True) as prof:
+            with profile(
+                activities=activities,
+                record_shapes=True,
+                with_flops=True,
+            ) as prof:
                 model(sample)
         total_flops = 0.0
         for event in prof.key_averages():

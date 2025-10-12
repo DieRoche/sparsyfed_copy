@@ -3,11 +3,13 @@
 import timeit
 from collections.abc import Callable
 from logging import INFO
+from numbers import Number
 
-from flwr.common import Parameters
+from flwr.common import FitRes, Parameters
 from flwr.common.logger import log
 from flwr.server import Server
 from flwr.server.client_manager import ClientManager
+from flwr.server.client_proxy import ClientProxy
 from flwr.server.history import History
 from flwr.server.strategy import Strategy
 
@@ -58,6 +60,7 @@ class WandbServer(Server):
         self.save_parameters_to_file = save_parameters_to_file
         self.save_files_per_round = save_files_per_round
         self._last_upload_size_bytes: float | None = None
+        self._reset_flop_state()
 
     # pylint: disable=too-many-locals
     def fit(
@@ -81,6 +84,8 @@ class WandbServer(Server):
             Potentially using a pre-defined history.
         """
         history = self.history if self.history is not None else History()
+
+        self._reset_flop_state()
 
         # Initialize parameters
         log(INFO, "Initializing global parameters")
@@ -176,6 +181,11 @@ class WandbServer(Server):
                     ),
                 })
 
+                self._update_flop_metrics(
+                    fit_results,
+                    fit_metrics,
+                )
+
                 if parameters_prime:
                     self.parameters = parameters_prime
                     # try to check the parameters sparsity here
@@ -234,18 +244,40 @@ class WandbServer(Server):
             cleanup_memory()
 
         if num_rounds > 0 and last_logged_round != num_rounds:
+            fallback_metrics: dict[str, float] = {
+                "upload_traffic": 0.0,
+                "download_traffic": 0.0,
+                "upload_traffic_per_client": float(
+                    self._last_upload_size_bytes or 0.0
+                ),
+                "overall_traffic": float(
+                    total_upload_traffic + total_download_traffic
+                ),
+            }
+
+            if self._flop_metrics_available:
+                fallback_metrics.update(
+                    {
+                        "round_flops": 0.0,
+                        "round_flops_including_compression": 0.0,
+                        "round_flops_compression": 0.0,
+                        "round_flops_decompression": 0.0,
+                        "total_flops": self._flop_totals["total_flops"],
+                        "total_flops_compression": self._flop_totals[
+                            "total_flops_compression"
+                        ],
+                        "total_flops_decompression": self._flop_totals[
+                            "total_flops_decompression"
+                        ],
+                        "total_flops_including_compression": self._flop_totals[
+                            "total_flops_including_compression"
+                        ],
+                    }
+                )
+
             history.add_metrics_distributed_fit(
                 server_round=num_rounds,
-                metrics={
-                    "upload_traffic": 0.0,
-                    "download_traffic": 0.0,
-                    "upload_traffic_per_client": float(
-                        self._last_upload_size_bytes or 0.0
-                    ),
-                    "overall_traffic": float(
-                        total_upload_traffic + total_download_traffic
-                    ),
-                },
+                metrics=fallback_metrics,
             )
 
         # Bookkeeping
@@ -253,3 +285,167 @@ class WandbServer(Server):
         elapsed = end_time - start_time
         log(INFO, "FL finished in %s", elapsed)
         return history
+
+    def _update_flop_metrics(
+        self,
+        fit_results: list[tuple[ClientProxy, FitRes]],
+        fit_metrics: dict[str, float | int | bool | str],
+    ) -> None:
+        """Update per-round and cumulative FLOP metrics.
+
+        Parameters
+        ----------
+        fit_results : list[tuple[ClientProxy, FitRes]]
+            The successful fit results for the current round.
+        fit_metrics : dict[str, float | int | bool | str]
+            The aggregated metrics dictionary for the round.
+        """
+
+        previous_totals = self._flop_totals.copy()
+
+        round_values = self._extract_round_flop_metrics(fit_metrics)
+
+        totals_from_metrics = self._extract_total_flop_metrics(fit_metrics)
+
+        if round_values is None and totals_from_metrics is not None:
+            round_values = self._diff_round_flops_from_totals(
+                totals_from_metrics,
+                previous_totals,
+            )
+
+        if round_values is None:
+            round_values = self._aggregate_round_flops_from_results(fit_results)
+
+        if round_values is None:
+            return
+
+        if totals_from_metrics is not None:
+            self._flop_totals.update(totals_from_metrics)
+        else:
+            self._flop_totals["total_flops"] += round_values["round_flops"]
+            self._flop_totals["total_flops_compression"] += round_values[
+                "round_flops_compression"
+            ]
+            self._flop_totals["total_flops_decompression"] += round_values[
+                "round_flops_decompression"
+            ]
+            self._flop_totals["total_flops_including_compression"] += sum(
+                round_values.values()
+            )
+
+        round_totals = {
+            **round_values,
+            "round_flops_including_compression": sum(round_values.values()),
+        }
+
+        self._flop_metrics_available = True
+
+        fit_metrics.update(round_totals)
+        fit_metrics.update(self._flop_totals)
+
+    def _reset_flop_state(self) -> None:
+        self._flop_totals = {
+            "total_flops": 0.0,
+            "total_flops_including_compression": 0.0,
+            "total_flops_decompression": 0.0,
+            "total_flops_compression": 0.0,
+        }
+        self._flop_metrics_available = False
+
+    @staticmethod
+    def _extract_round_flop_metrics(
+        metrics: dict[str, float | int | bool | str] | None,
+    ) -> dict[str, float] | None:
+        if not metrics:
+            return None
+
+        values: dict[str, float] = {}
+        found_any = False
+        for key in (
+            "round_flops",
+            "round_flops_compression",
+            "round_flops_decompression",
+        ):
+            value = metrics.get(key)
+            if isinstance(value, Number):
+                values[key] = float(value)
+                found_any = True
+            else:
+                values[key] = 0.0
+
+        return values if found_any else None
+
+    @staticmethod
+    def _extract_total_flop_metrics(
+        metrics: dict[str, float | int | bool | str] | None,
+    ) -> dict[str, float] | None:
+        if not metrics:
+            return None
+
+        values: dict[str, float] = {}
+        for key in (
+            "total_flops",
+            "total_flops_compression",
+            "total_flops_decompression",
+            "total_flops_including_compression",
+        ):
+            value = metrics.get(key)
+            if isinstance(value, Number):
+                values[key] = float(value)
+
+        return values or None
+
+    @staticmethod
+    def _diff_round_flops_from_totals(
+        totals_from_metrics: dict[str, float],
+        previous_totals: dict[str, float],
+    ) -> dict[str, float] | None:
+        round_values = {
+            "round_flops": 0.0,
+            "round_flops_compression": 0.0,
+            "round_flops_decompression": 0.0,
+        }
+        found_any = False
+
+        mapping = (
+            ("total_flops", "round_flops"),
+            ("total_flops_compression", "round_flops_compression"),
+            ("total_flops_decompression", "round_flops_decompression"),
+        )
+
+        for total_key, round_key in mapping:
+            new_total = totals_from_metrics.get(total_key)
+            previous_total = previous_totals.get(total_key, 0.0)
+            if isinstance(new_total, Number):
+                diff = float(new_total) - float(previous_total)
+                round_values[round_key] = diff
+                if diff != 0.0:
+                    found_any = True
+
+        return round_values if found_any else None
+
+    @staticmethod
+    def _aggregate_round_flops_from_results(
+        fit_results: list[tuple[ClientProxy, FitRes]],
+    ) -> dict[str, float] | None:
+        if not fit_results:
+            return None
+
+        values = {
+            "round_flops": 0.0,
+            "round_flops_compression": 0.0,
+            "round_flops_decompression": 0.0,
+        }
+        found_any = False
+
+        for _, fit_res in fit_results:
+            metrics = getattr(fit_res, "metrics", None)
+            if not isinstance(metrics, dict):
+                continue
+            for key in values:
+                value = metrics.get(key)
+                if isinstance(value, Number):
+                    values[key] += float(value)
+                    found_any = True
+
+        return values if found_any else None

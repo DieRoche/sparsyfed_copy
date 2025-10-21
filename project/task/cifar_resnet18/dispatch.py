@@ -24,6 +24,7 @@ from omegaconf import DictConfig
 from project.task.default.dispatch import dispatch_config as dispatch_default_config
 from project.task.cifar_resnet18.dataset import get_dataloader_generators
 from project.task.cifar_resnet18.models import (
+    get_efficientnet_b0,
     get_network_generator_resnet_sparsyfed,
     get_network_generator_resnet_sparsyfed_no_act,
     get_network_generator_resnet_zerofl,
@@ -85,6 +86,21 @@ def dispatch_train(
     if train_structure is not None and train_structure.upper() == "CIFAR_RN18":
         return (
             train,
+            test,
+            get_fed_eval_fn,
+        )
+    if train_structure is not None and train_structure.upper() == "CIFAR_EFFNET_B0":
+        return (
+            train,
+            test,
+            get_fed_eval_fn,
+        )
+    if (
+        train_structure is not None
+        and train_structure.upper() == "CIFAR_EFFNET_B0_PRUNE"
+    ):
+        return (
+            get_train_and_prune(alpha=alpha, amount=sparsity, pruning_method="l1"),
             test,
             get_fed_eval_fn,
         )
@@ -172,6 +188,12 @@ def dispatch_data(cfg: DictConfig) -> DataStructure | None:
         if client_model_and_data.upper() == "CIFAR_RN18":
             return (
                 get_resnet18(num_classes=num_classes),
+                client_dataloader_gen,
+                fed_dataloader_gen,
+            )
+        if client_model_and_data.upper() == "CIFAR_EFFNET_B0":
+            return (
+                get_efficientnet_b0(num_classes=num_classes),
                 client_dataloader_gen,
                 fed_dataloader_gen,
             )

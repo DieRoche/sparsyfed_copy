@@ -18,6 +18,8 @@ from project.task.utils.sparsyfed_no_act_modules import (
     SparsyFed_no_act_linear,
 )
 
+from project.task.cifar_resnet18.efficientnet import EfficientNetB0_CIFAR
+
 from project.task.utils.spectral_norm import SpectralNormHandler
 from project.task.utils.swat_modules import SWATConv2D as ZeroflSwatConv2D
 from project.task.utils.swat_modules import SWATLinear as ZeroflSwatLinear
@@ -442,6 +444,48 @@ def get_network_generator_resnet_sparsyfed_no_act(
     def generated_net(_config: dict) -> NetCifarResnet18:
         """Return a deep copy of the untrained network."""
         return deepcopy(untrained_net)
+
+    return generated_net
+
+
+def get_efficientnet_b0(
+    num_classes: int = 100,
+    drop_rate: float = 0.2,
+) -> Callable[[dict], EfficientNetB0_CIFAR]:
+    """EfficientNet-B0 network generator configured for CIFAR-sized inputs."""
+
+    untrained_net = EfficientNetB0_CIFAR(
+        num_classes=num_classes,
+        drop_rate=drop_rate,
+    )
+
+    def generated_net(config: dict) -> EfficientNetB0_CIFAR:
+        """Return a freshly initialized EfficientNet-B0 instance."""
+
+        if config is None:
+            config = {}
+        elif not isinstance(config, dict):
+            try:
+                config = dict(config)
+            except TypeError:
+                config = {}
+        requested_num_classes = config.get("num_classes", num_classes)
+        if requested_num_classes is None:
+            requested_num_classes = num_classes
+        requested_drop_rate = config.get("drop_rate", drop_rate)
+        if requested_drop_rate is None:
+            requested_drop_rate = drop_rate
+        if (
+            requested_num_classes == num_classes
+            and requested_drop_rate == drop_rate
+            and not config
+        ):
+            # Fast-path when no overrides are provided
+            return deepcopy(untrained_net)
+        return EfficientNetB0_CIFAR(
+            num_classes=requested_num_classes,
+            drop_rate=requested_drop_rate,
+        )
 
     return generated_net
 

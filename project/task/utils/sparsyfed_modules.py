@@ -373,8 +373,6 @@ class SparsyFedConv2DEffnet(nn.Module):
         groups: _int = 1,
         bias: bool = True,
         padding_mode: str = "zeros",
-        device: torch.device | None = None,
-        dtype: torch.dtype | None = None,
         sparsity: float = 0.3,
         pruning_type: str = "unstructured",
         warm_up: int = 0,
@@ -404,17 +402,9 @@ class SparsyFedConv2DEffnet(nn.Module):
             padding_mode=padding_mode,
         )
 
-        if device is not None or dtype is not None:
-            self.inner = self.inner.to(device=device, dtype=dtype)
-
-        weight_shape = self.inner.weight.shape
-        self.weight = nn.Parameter(
-            torch.empty(weight_shape, device=self.inner.weight.device, dtype=self.inner.weight.dtype)
-        )
+        self.weight = nn.Parameter(torch.empty_like(self.inner.weight))
         if bias:
-            self.bias = nn.Parameter(
-                torch.empty_like(self.inner.bias, device=self.inner.bias.device, dtype=self.inner.bias.dtype)
-            )
+            self.bias = nn.Parameter(torch.empty_like(self.inner.bias))
         else:
             self.register_parameter("bias", None)
 
@@ -514,13 +504,13 @@ class SparsyFedConv2DEffnet(nn.Module):
             groups=conv.groups,
             bias=conv.bias is not None,
             padding_mode=conv.padding_mode,
-            device=conv.weight.device,
-            dtype=conv.weight.dtype,
             sparsity=sparsity,
             pruning_type=pruning_type,
             warm_up=warm_up,
             period=period,
         )
+
+        new_module = new_module.to(conv.weight.device, conv.weight.dtype)
 
         with torch.no_grad():
             new_module.weight.copy_(conv.weight)

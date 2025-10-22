@@ -25,6 +25,9 @@ from project.task.default.dispatch import dispatch_config as dispatch_default_co
 from project.task.cifar_resnet18.dataset import get_dataloader_generators
 from project.task.cifar_resnet18.models import (
     get_efficientnet_b0,
+    get_network_generator_efficientnet_sparsyfed,
+    get_network_generator_efficientnet_sparsyfed_no_act,
+    get_network_generator_efficientnet_zerofl,
     get_network_generator_resnet_sparsyfed,
     get_network_generator_resnet_sparsyfed_no_act,
     get_network_generator_resnet_zerofl,
@@ -206,10 +209,26 @@ def dispatch_data(cfg: DictConfig) -> DataStructure | None:
                 client_dataloader_gen,
                 fed_dataloader_gen,
             )
+        if client_model_and_data.upper() == "CIFAR_SPARSYFED_EFFNET_B0":
+            return (
+                get_network_generator_efficientnet_sparsyfed(
+                    alpha=alpha, sparsity=sparsity, num_classes=num_classes
+                ),
+                client_dataloader_gen,
+                fed_dataloader_gen,
+            )
         # SparseFed with no activation
         if client_model_and_data.upper() == "CIFAR_SPARSYFED_NA_RN18":
             return (
                 get_network_generator_resnet_sparsyfed_no_act(
+                    alpha=alpha, sparsity=sparsity, num_classes=num_classes
+                ),
+                client_dataloader_gen,
+                fed_dataloader_gen,
+            )
+        if client_model_and_data.upper() == "CIFAR_SPARSYFED_NA_EFFNET_B0":
+            return (
+                get_network_generator_efficientnet_sparsyfed_no_act(
                     alpha=alpha, sparsity=sparsity, num_classes=num_classes
                 ),
                 client_dataloader_gen,
@@ -224,10 +243,24 @@ def dispatch_data(cfg: DictConfig) -> DataStructure | None:
                 client_dataloader_gen,
                 fed_dataloader_gen,
             )
+        if client_model_and_data.upper() == "CIFAR_ZEROFL_EFFNET_B0":
+            return (
+                get_network_generator_efficientnet_zerofl(
+                    alpha=alpha, sparsity=sparsity, num_classes=num_classes
+                ),
+                client_dataloader_gen,
+                fed_dataloader_gen,
+            )
         # FLASH
         if client_model_and_data.upper() == "CIFAR_FLASH_RN18":
             return (
                 get_resnet18(num_classes=num_classes),
+                client_dataloader_gen,
+                fed_dataloader_gen,
+            )
+        if client_model_and_data.upper() == "CIFAR_FLASH_EFFNET_B0":
+            return (
+                get_efficientnet_b0(num_classes=num_classes),
                 client_dataloader_gen,
                 fed_dataloader_gen,
             )

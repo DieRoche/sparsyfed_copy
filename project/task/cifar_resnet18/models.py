@@ -361,6 +361,9 @@ def replace_layer_with_sparsyfed_effnet(
 
     for attr_str in dir(module):
         target_attr = getattr(module, attr_str)
+        if isinstance(target_attr, SparsyFedConv2DEffnet):
+            # Already wrapped, avoid descending into the inner Conv2d again.
+            continue
         if isinstance(target_attr, nn.Conv2d):
             new_conv = SparsyFedConv2DEffnet.from_conv(
                 target_attr,
@@ -380,6 +383,9 @@ def replace_layer_with_sparsyfed_effnet(
             setattr(module, attr_str, new_linear)
 
     for child_name, immediate_child_module in module.named_children():
+        if isinstance(immediate_child_module, SparsyFedConv2DEffnet):
+            # Skip recursion into wrapped convolutions to prevent infinite wrapping.
+            continue
         replace_layer_with_sparsyfed_effnet(
             immediate_child_module, child_name, alpha, sparsity, pruning_type
         )

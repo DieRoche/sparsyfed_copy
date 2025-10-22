@@ -11,7 +11,11 @@ import torch
 
 from torch import nn
 
-from project.task.utils.sparsyfed_modules import SparsyFedConv2D, SparsyFedLinear
+from project.task.utils.sparsyfed_modules import (
+    SparsyFedConv2D,
+    SparsyFedConv2DEffnet,
+    SparsyFedLinear,
+)
 from project.task.utils.sparsyfed_no_act_modules import (
     SparsyFed_no_act_Conv1D,
     SparsyFed_no_act_Conv2D,
@@ -168,6 +172,7 @@ def init_weights(module: nn.Module) -> None:
         | SparsyFed_no_act_Conv1D
         | SparsyFedLinear
         | SparsyFedConv2D
+        | SparsyFedConv2DEffnet
         | ZeroflSwatLinear
         | ZeroflSwatConv2D
         | nn.Linear
@@ -190,7 +195,8 @@ def init_weights(module: nn.Module) -> None:
                 SparsyFed_no_act_linear
                 | SparsyFed_no_act_Conv2D
                 | SparsyFedLinear
-                | SparsyFedConv2D,
+                | SparsyFedConv2D
+                | SparsyFedConv2DEffnet,
             )
             and module.alpha > 1
         ):
@@ -342,6 +348,41 @@ def replace_layer_with_sparsyfed(
 
     for model, immediate_child_module in module.named_children():
         replace_layer_with_sparsyfed(immediate_child_module, model, alpha, sparsity)
+
+
+def replace_layer_with_sparsyfed_effnet(
+    module: nn.Module,
+    name: str = "Model",
+    alpha: float = 1.0,
+    sparsity: float = 0.0,
+    pruning_type: str = "unstructured",
+) -> None:
+    """Replace EfficientNet Conv2d layers with SparsyFed equivalents preserving groups."""
+
+    for attr_str in dir(module):
+        target_attr = getattr(module, attr_str)
+        if isinstance(target_attr, nn.Conv2d):
+            new_conv = SparsyFedConv2DEffnet.from_conv(
+                target_attr,
+                alpha=alpha,
+                sparsity=sparsity,
+                pruning_type=pruning_type,
+            )
+            setattr(module, attr_str, new_conv)
+        elif isinstance(target_attr, nn.Linear):
+            new_linear = SparsyFedLinear(
+                alpha=alpha,
+                in_features=target_attr.in_features,
+                out_features=target_attr.out_features,
+                bias=target_attr.bias is not None,
+                sparsity=sparsity,
+            )
+            setattr(module, attr_str, new_linear)
+
+    for child_name, immediate_child_module in module.named_children():
+        replace_layer_with_sparsyfed_effnet(
+            immediate_child_module, child_name, alpha, sparsity, pruning_type
+        )
 
 
 def get_network_generator_resnet_sparsyfed(
@@ -500,7 +541,7 @@ def get_network_generator_efficientnet_sparsyfed(
         num_classes=num_classes,
     )
 
-    replace_layer_with_sparsyfed(
+    replace_layer_with_sparsyfed_effnet(
         module=untrained_net,
         name="EfficientNetB0_CIFAR",
         alpha=alpha,
@@ -642,6 +683,7 @@ def get_parameters_to_prune(
             or type(module) == SparsyFed_no_act_Conv1D
             or type(module) == SparsyFed_no_act_linear
             or type(module) == SparsyFedConv2D
+            or type(module) == SparsyFedConv2DEffnet
             or type(module) == SparsyFedLinear
             or type(module) == ZeroflSwatConv2D
             or type(module) == ZeroflSwatLinear
@@ -689,6 +731,7 @@ def set_spectral_global_exponent(net: nn.Module, apply: bool = False) -> float:
             | nn.Conv2d
             | SparsyFedLinear
             | SparsyFedConv2D
+            | SparsyFedConv2DEffnet
             | SparsyFed_no_act_linear
             | SparsyFed_no_act_Conv2D,
         ):
@@ -732,6 +775,7 @@ def set_spectral_global_exponent(net: nn.Module, apply: bool = False) -> float:
             module,
             SparsyFedLinear
             | SparsyFedConv2D
+            | SparsyFedConv2DEffnet
             | SparsyFed_no_act_linear
             | SparsyFed_no_act_Conv2D,
         ) and hasattr(module, "alpha"):
@@ -773,7 +817,12 @@ def prevent_layer_collapse(
     ):
         if (
             isinstance(
-                sparse_layer, nn.Conv2d | nn.Linear | SparsyFedLinear | SparsyFedConv2D
+                sparse_layer,
+                nn.Conv2d
+                | nn.Linear
+                | SparsyFedLinear
+                | SparsyFedConv2D
+                | SparsyFedConv2DEffnet,
             )
             and torch.sum(sparse_layer.weight.data != 0) == 0
         ):

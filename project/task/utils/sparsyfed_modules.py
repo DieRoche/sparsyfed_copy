@@ -344,7 +344,6 @@ class SparsyFedConv2D(nn.Module):
         return output
 
     def forward(self, input):
-        # Apply the re-parametrisation to `self.weight` using `self.alpha`
         if self.alpha == 1.0:
             sparsyfed_weight = self.weight
         elif self.alpha < 0:
@@ -356,11 +355,177 @@ class SparsyFedConv2D(nn.Module):
                 torch.abs(self.weight), self.alpha
             )
 
-        # Perform the forward pass
-        output = self._call_sparsyfed_conv2d(
-            input,
-            sparsyfed_weight,
+        return self._call_sparsyfed_conv2d(input, sparsyfed_weight)
+
+
+class SparsyFedConv2DEffnet(nn.Module):
+    """SparsyFed Conv2D variant that keeps EfficientNet depthwise settings intact."""
+
+    def __init__(
+        self,
+        alpha: float,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: Union[_size, _int] = 3,
+        stride: Union[_size, _int] = 1,
+        padding: Union[_size, _int] = 0,
+        dilation: Union[_size, _int] = 1,
+        groups: _int = 1,
+        bias: bool = True,
+        padding_mode: str = "zeros",
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
+        sparsity: float = 0.3,
+        pruning_type: str = "unstructured",
+        warm_up: int = 0,
+        period: int = 1,
+    ) -> None:
+        super().__init__()
+        self.alpha = alpha
+        self.sparsity = sparsity
+        self.pruning_type = pruning_type
+        self.warmup = warm_up
+        self.period = period
+        self.wt_threshold = -1.0
+        self.in_threshold = -1.0
+        self.epoch = 0
+        self.batch_idx = 0
+        self.spectral_norm_handler = SpectralNormHandler()
+
+        self.inner = nn.Conv2d(
+            in_channels,
+            out_channels,
+            kernel_size,
+            stride=stride,
+            padding=padding,
+            dilation=dilation,
+            groups=groups,
+            bias=bias,
+            padding_mode=padding_mode,
         )
 
-        # Return the output
+        if device is not None or dtype is not None:
+            self.inner = self.inner.to(device=device, dtype=dtype)
+
+        weight_shape = self.inner.weight.shape
+        self.weight = nn.Parameter(
+            torch.empty(weight_shape, device=self.inner.weight.device, dtype=self.inner.weight.dtype)
+        )
+        if bias:
+            self.bias = nn.Parameter(
+                torch.empty_like(self.inner.bias, device=self.inner.bias.device, dtype=self.inner.bias.dtype)
+            )
+        else:
+            self.register_parameter("bias", None)
+
+        with torch.no_grad():
+            self.weight.copy_(self.inner.weight)
+            if bias and self.bias is not None and self.inner.bias is not None:
+                self.bias.copy_(self.inner.bias)
+
+        # Remove the parameters from the inner conv so they are only tracked once.
+        self.inner.register_parameter("weight", None)
+        if bias:
+            self.inner.register_parameter("bias", None)
+
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = _pair(kernel_size)
+        self.stride = _pair(stride)
+        self.padding = _pair(padding)
+        self.dilation = _pair(dilation)
+        self.groups = groups
+        self.padding_mode = padding_mode
+        self.b = bias
+
+    def __repr__(self) -> str:
+        return (
+            "SparsyFedConv2DEffnet("
+            f"alpha={self.alpha}, in_channels={self.in_channels}, "
+            f"out_channels={self.out_channels}, kernel_size={self.kernel_size}, "
+            f"bias={self.b}, stride={self.stride}, padding={self.padding}, "
+            f"dilation={self.dilation}, groups={self.groups}, padding_mode={self.padding_mode}, "
+            f"sparsity={self.sparsity}, pruning_type={self.pruning_type}, "
+            f"warm_up={self.warmup}, period={self.period})"
+        )
+
+    def get_weight(self) -> torch.Tensor:
+        weight = self.weight.detach()
+        if self.alpha == 1.0:
+            return weight
+        if self.alpha < 0:
+            return self.spectral_norm_handler.compute_weight_update(weight)
+        return torch.sign(weight) * torch.pow(torch.abs(weight), self.alpha)
+
+    def _call_sparsyfed_conv2d(self, input: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+        if self.training:
+            sparsity = get_tensor_sparsity(weight)
+        else:
+            sparsity = 0.0
+
+        output, in_threshold = sparsyfed_conv2d.apply(
+            input,
+            weight,
+            self.bias,
+            sparsity,
+            self.in_threshold,
+            self.stride,
+            self.padding,
+            self.dilation,
+            self.groups,
+        )
+
+        if sparsity != 0.0:
+            self.in_threshold = in_threshold
+
         return output
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        if self.alpha == 1.0:
+            sparsyfed_weight = self.weight
+        elif self.alpha < 0:
+            sparsyfed_weight = self.spectral_norm_handler.compute_weight_update(self.weight)
+        else:
+            sparsyfed_weight = torch.sign(self.weight) * torch.pow(
+                torch.abs(self.weight), self.alpha
+            )
+
+        return self._call_sparsyfed_conv2d(input, sparsyfed_weight)
+
+    @classmethod
+    def from_conv(
+        cls,
+        conv: nn.Conv2d,
+        *,
+        alpha: float,
+        sparsity: float,
+        pruning_type: str = "unstructured",
+        warm_up: int = 0,
+        period: int = 1,
+    ) -> "SparsyFedConv2DEffnet":
+        new_module = cls(
+            alpha=alpha,
+            in_channels=conv.in_channels,
+            out_channels=conv.out_channels,
+            kernel_size=conv.kernel_size,
+            stride=conv.stride,
+            padding=conv.padding,
+            dilation=conv.dilation,
+            groups=conv.groups,
+            bias=conv.bias is not None,
+            padding_mode=conv.padding_mode,
+            device=conv.weight.device,
+            dtype=conv.weight.dtype,
+            sparsity=sparsity,
+            pruning_type=pruning_type,
+            warm_up=warm_up,
+            period=period,
+        )
+
+        with torch.no_grad():
+            new_module.weight.copy_(conv.weight)
+            if conv.bias is not None and new_module.bias is not None:
+                new_module.bias.copy_(conv.bias)
+
+        new_module.train(conv.training)
+        return new_module

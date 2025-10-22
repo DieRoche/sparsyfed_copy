@@ -179,8 +179,11 @@ def init_weights(module: nn.Module) -> None:
         | nn.Conv2d
         | nn.Conv1d,
     ):
-        # Your code here
-        fan_in = calculate_fan_in(module.weight.data)
+        weight = getattr(module, "weight", None)
+        if weight is None:
+            return
+
+        fan_in = calculate_fan_in(weight.data)
 
         # constant from scipy.stats.truncnorm.std(a=-2, b=2, loc=0., scale=1.)
         distribution_stddev = 0.87962566103423978
@@ -188,7 +191,7 @@ def init_weights(module: nn.Module) -> None:
         std = np.sqrt(1.0 / fan_in) / distribution_stddev
         a, b = -2.0 * std, 2.0 * std
 
-        u = nn.init.trunc_normal_(module.weight.data, std=std, a=a, b=b)
+        u = nn.init.trunc_normal_(weight.data, std=std, a=a, b=b)
         if (
             isinstance(
                 module,
@@ -202,7 +205,7 @@ def init_weights(module: nn.Module) -> None:
         ):
             u = torch.sign(u) * torch.pow(torch.abs(u), 1.0 / module.alpha)
 
-        module.weight.data = u
+        weight.data = u
         if module.bias is not None:
             module.bias.data.zero_()
 

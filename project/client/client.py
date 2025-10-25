@@ -22,6 +22,7 @@ from project.fed.utils.utils import (
     generic_set_parameters,
     get_nonzeros,
 )
+from project.fed.utils.sparse_update import serialise_sparse_update
 
 from project.types.common import (
     ClientDataloaderGen,
@@ -235,6 +236,27 @@ class Client(fl.client.NumPyClient):
             config.net_config,
         )
 
+        state_items = sorted(self.net.state_dict().items(), key=lambda x: x[0])
+        base_state = [
+            tensor.detach().cpu().numpy().copy() for _, tensor in state_items
+        ]
+        param_dtypes = [tensor.dtype for tensor in base_state]
+        prunable_flags = [tensor.ndim > 1 for tensor in base_state]
+
+        target_sparsity = 0.0
+        for module in self.net.modules():
+            sparsity_attr = getattr(module, "sparsity", None)
+            if sparsity_attr is not None:
+                target_sparsity = float(sparsity_attr)
+                break
+
+        curr_round = int(config.extra.get("curr_round", 0))
+        activation_enabled = curr_round > 0
+
+        for module in self.net.modules():
+            if hasattr(module, "set_activation_pruning"):
+                module.set_activation_pruning(activation_enabled)
+
         server_nonzero_count, server_total_count = count_nonzero_elements(parameters)
 
         del parameters
@@ -257,10 +279,68 @@ class Client(fl.client.NumPyClient):
 
             metrics["learning_rate"] = config.run_config["learning_rate"]
 
-            updated_parameters = generic_get_parameters(self.net)
-            client_nonzero_count, client_total_count = count_nonzero_elements(
-                updated_parameters
+            updated_state_items = sorted(
+                self.net.state_dict().items(), key=lambda x: x[0]
             )
+            updated_state = [
+                tensor.detach().cpu().numpy().copy()
+                for _, tensor in updated_state_items
+            ]
+
+            deltas = [
+                updated - base
+                for updated, base in zip(updated_state, base_state, strict=True)
+            ]
+
+            if activation_enabled and target_sparsity > 0.0:
+                prunable_abs = [
+                    np.abs(delta).reshape(-1)
+                    for delta, is_prunable in zip(deltas, prunable_flags, strict=True)
+                    if is_prunable
+                ]
+                if prunable_abs:
+                    concatenated = np.concatenate(prunable_abs)
+                    total_prunable = concatenated.size
+                    desired_density = max(1.0 - float(target_sparsity), 0.0)
+                    k = max(int(np.ceil(desired_density * total_prunable)), 1)
+                    k = min(k, total_prunable)
+                    if k >= total_prunable:
+                        activation_threshold = 0.0
+                    else:
+                        activation_threshold = float(
+                            np.partition(concatenated, total_prunable - k)[
+                                total_prunable - k
+                            ]
+                        )
+                else:
+                    activation_threshold = 0.0
+            else:
+                activation_threshold = 0.0
+
+            masks: list[np.ndarray] = []
+            client_nonzero_count = 0
+            client_total_count = 0
+            for delta, is_prunable in zip(deltas, prunable_flags, strict=True):
+                client_total_count += delta.size
+                if activation_enabled and is_prunable and target_sparsity > 0.0:
+                    if activation_threshold > 0.0:
+                        mask = np.abs(delta) >= activation_threshold
+                    else:
+                        mask = np.abs(delta) > 0.0
+                else:
+                    mask = np.ones(delta.shape, dtype=bool)
+                client_nonzero_count += int(mask.sum())
+                masks.append(mask)
+
+            serialization = serialise_sparse_update(
+                deltas, masks, param_dtypes, prunable_flags
+            )
+
+            updated_parameters = [
+                serialization.values.astype(np.float32, copy=False),
+                serialization.indices.astype(np.int64, copy=False),
+                serialization.metadata.astype(np.int64, copy=False),
+            ]
 
             try:
                 num_batches = len(trainloader)
@@ -304,6 +384,7 @@ class Client(fl.client.NumPyClient):
                 if server_total_count
                 else 0.0
             )
+            metrics["target_sparsity"] = float(target_sparsity)
             metrics["client_to_server_nonzero"] = float(client_nonzero_count)
             metrics["client_to_server_density"] = (
                 float(client_nonzero_count) / float(client_total_count)
@@ -316,6 +397,8 @@ class Client(fl.client.NumPyClient):
             metrics["round_flops"] = round_flops
             metrics.setdefault("round_flops_compression", 0.0)
             metrics.setdefault("round_flops_decompression", 0.0)
+            metrics["sparse_payload"] = 1.0
+            metrics["sparse_threshold"] = float(activation_threshold)
 
             updates_dir_raw = config.extra.get("client_updates_dir")
             if updates_dir_raw:
@@ -326,7 +409,9 @@ class Client(fl.client.NumPyClient):
                 )
                 np.savez_compressed(
                     updates_dir / f"{base_name}.npz",
-                    *updated_parameters,
+                    values=serialization.values,
+                    indices=serialization.indices,
+                    metadata=serialization.metadata,
                 )
 
                 metrics_to_store: dict[str, float | int | str | bool] = {}

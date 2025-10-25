@@ -46,6 +46,11 @@ from functools import reduce
 
 import numpy as np
 
+from project.fed.utils.sparse_update import (
+    deserialise_sparse_update,
+    reconstruct_dense_update,
+)
+
 WARNING_MIN_AVAILABLE_CLIENTS_TOO_LOW = """
 Setting `min_available_clients` lower than `min_fit_clients` or
 `min_evaluate_clients` can cause the server to fail when there are too few clients
@@ -203,6 +208,10 @@ class FedAvgNZ(Strategy):
         self.fit_metrics_aggregation_fn = fit_metrics_aggregation_fn
         self.evaluate_metrics_aggregation_fn = evaluate_metrics_aggregation_fn
         self.working_dir = working_dir
+        self.current_weights: NDArrays | None = None
+        self.param_shapes: list[tuple[int, ...]] | None = None
+        self.param_dtypes: list[np.dtype] | None = None
+        self.prev_mask: np.ndarray | None = None
 
     def __repr__(self) -> str:
         """Compute a string representation of the strategy."""
@@ -225,6 +234,12 @@ class FedAvgNZ(Strategy):
         """Initialize global model parameters."""
         initial_parameters = self.initial_parameters
         self.initial_parameters = None  # Don't keep initial parameters in memory
+        if initial_parameters is not None:
+            initial_ndarrays = parameters_to_ndarrays(initial_parameters)
+            self.current_weights = [np.copy(layer) for layer in initial_ndarrays]
+            self.param_shapes = [layer.shape for layer in initial_ndarrays]
+            self.param_dtypes = [layer.dtype for layer in initial_ndarrays]
+            self.prev_mask = None
         return initial_parameters
 
     def evaluate(
@@ -301,12 +316,57 @@ class FedAvgNZ(Strategy):
         if not self.accept_failures and failures:
             return None, {}
 
-        # Convert results
-        weights_results = [
-            (parameters_to_ndarrays(fit_res.parameters), fit_res.num_examples)
-            for _, fit_res in results
+        if self.current_weights is None:
+            first_weights = parameters_to_ndarrays(results[0][1].parameters)
+            self.current_weights = [np.zeros_like(layer) for layer in first_weights]
+            self.param_shapes = [layer.shape for layer in first_weights]
+            self.param_dtypes = [layer.dtype for layer in first_weights]
+            self.prev_mask = None
+
+        if self.param_shapes is None or self.param_dtypes is None:
+            raise ValueError("Parameter metadata unavailable for aggregation")
+
+        dense_updates: list[tuple[list[np.ndarray], int]] = []
+        uplink_nonzeros = 0
+
+        for _, fit_res in results:
+            is_sparse = bool(fit_res.metrics.get("sparse_payload", 0.0))
+            if is_sparse:
+                serialization = deserialise_sparse_update(fit_res.parameters)
+                client_update = reconstruct_dense_update(
+                    serialization, self.param_shapes, self.param_dtypes
+                )
+                uplink_nonzeros += int(serialization.metadata[:, 1].sum())
+            else:
+                client_weights = parameters_to_ndarrays(fit_res.parameters)
+                uplink_nonzeros += sum(layer.size for layer in client_weights)
+                if self.current_weights is None:
+                    raise ValueError("Current global weights unavailable for delta computation")
+                client_update = [
+                    layer - base
+                    for layer, base in zip(
+                        client_weights, self.current_weights, strict=True
+                    )
+                ]
+                uplink_nonzeros += sum(np.count_nonzero(layer) for layer in client_update)
+
+            dense_updates.append((client_update, fit_res.num_examples))
+
+        total_examples = sum(num_examples for _, num_examples in dense_updates)
+        if total_examples <= 0:
+            total_examples = 1
+
+        aggregated_update = [np.zeros_like(layer) for layer in self.current_weights]
+        for update_layers, num_examples in dense_updates:
+            weight = num_examples / total_examples
+            for idx, delta in enumerate(update_layers):
+                aggregated_update[idx] += delta * weight
+
+        self.current_weights = [
+            base + delta for base, delta in zip(self.current_weights, aggregated_update, strict=True)
         ]
-        parameters_aggregated = ndarrays_to_parameters(aggregate(weights_results))
+
+        parameters_aggregated = ndarrays_to_parameters(self.current_weights)
 
         # Aggregate custom metrics if aggregation fn was provided
         metrics_aggregated = {}
@@ -315,6 +375,41 @@ class FedAvgNZ(Strategy):
             metrics_aggregated = self.fit_metrics_aggregation_fn(fit_metrics)
         elif server_round == 1:  # Only log this warning once
             log(WARNING, "No fit_metrics_aggregation_fn provided")
+
+        total_nonzero = 0
+        total_elements = 0
+        layer_sparsities: list[float] = []
+        for layer in self.current_weights:
+            nonzero = np.count_nonzero(layer)
+            total = layer.size
+            total_nonzero += nonzero
+            total_elements += total
+            sparsity = 1.0 - (nonzero / total) if total else 0.0
+            layer_sparsities.append(float(sparsity))
+
+        global_sparsity = 1.0 - (total_nonzero / total_elements) if total_elements else 0.0
+
+        current_mask = np.concatenate(
+            [layer != 0 for layer in self.current_weights]
+        ).astype(bool)
+        if self.prev_mask is None:
+            mask_iou = 1.0
+        else:
+            union = np.logical_or(current_mask, self.prev_mask)
+            intersection = np.logical_and(current_mask, self.prev_mask)
+            mask_iou = float(intersection.sum() / union.sum()) if union.any() else 1.0
+        self.prev_mask = current_mask
+
+        metrics_aggregated["global_sparsity"] = float(global_sparsity)
+        metrics_aggregated["mask_iou"] = float(mask_iou)
+        for idx, sparsity in enumerate(layer_sparsities):
+            metrics_aggregated[f"layer_sparsity_{idx}"] = float(sparsity)
+
+        metrics_aggregated["uplink_nonzero_total"] = float(uplink_nonzeros)
+        metrics_aggregated["downlink_nonzero_total"] = float(total_nonzero)
+        metrics_aggregated["downlink_density"] = (
+            float(total_nonzero) / float(total_elements) if total_elements else 0.0
+        )
 
         return parameters_aggregated, metrics_aggregated
 

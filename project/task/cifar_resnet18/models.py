@@ -22,7 +22,8 @@ from project.task.utils.sparsyfed_no_act_modules import (
     SparsyFed_no_act_linear,
 )
 
-from project.task.cifar_resnet18.efficientnet import EfficientNetB0_CIFAR
+from torchvision import models as tv_models
+from torchvision.models.efficientnet import EfficientNet
 
 from project.task.utils.spectral_norm import SpectralNormHandler
 from project.task.utils.swat_modules import SWATConv2D as ZeroflSwatConv2D
@@ -498,16 +499,20 @@ def get_network_generator_resnet_sparsyfed_no_act(
     return generated_net
 
 
+def _build_efficientnet(num_classes: int) -> EfficientNet:
+    """Instantiate a torchvision EfficientNet-B0 model without pretrained weights."""
+
+    return tv_models.efficientnet_b0(weights=None, num_classes=num_classes)
+
+
 def get_efficientnet_b0(
     num_classes: int = 100,
-) -> Callable[[dict], EfficientNetB0_CIFAR]:
-    """EfficientNet-B0 network generator configured for CIFAR-sized inputs."""
+) -> Callable[[dict], EfficientNet]:
+    """EfficientNet-B0 network generator configured for torchvision's implementation."""
 
-    untrained_net = EfficientNetB0_CIFAR(
-        num_classes=num_classes,
-    )
+    untrained_net = _build_efficientnet(num_classes=num_classes)
 
-    def generated_net(config: dict) -> EfficientNetB0_CIFAR:
+    def generated_net(config: dict) -> EfficientNet:
         """Return a freshly initialized EfficientNet-B0 instance."""
 
         if config is None:
@@ -525,15 +530,10 @@ def get_efficientnet_b0(
         requested_num_classes = sanitized_config.get("num_classes", num_classes)
         if requested_num_classes is None:
             requested_num_classes = num_classes
-        if (
-            requested_num_classes == num_classes
-            and not sanitized_config
-        ):
+        if requested_num_classes == num_classes and not sanitized_config:
             # Fast-path when no overrides are provided
             return deepcopy(untrained_net)
-        return EfficientNetB0_CIFAR(
-            num_classes=requested_num_classes,
-        )
+        return _build_efficientnet(num_classes=requested_num_classes)
 
     return generated_net
 
@@ -543,16 +543,14 @@ def get_network_generator_efficientnet_sparsyfed(
     sparsity: float = 0.0,
     num_classes: int = 100,
     pruning_type: str = "unstructured",
-) -> Callable[[dict], EfficientNetB0_CIFAR]:
+) -> Callable[[dict], EfficientNet]:
     """Create a SparsyFed EfficientNet-B0 generator."""
 
-    untrained_net = EfficientNetB0_CIFAR(
-        num_classes=num_classes,
-    )
+    untrained_net = _build_efficientnet(num_classes=num_classes)
 
     replace_layer_with_sparsyfed_effnet(
         module=untrained_net,
-        name="EfficientNetB0_CIFAR",
+        name="EfficientNetB0",
         alpha=alpha,
         sparsity=sparsity,
         pruning_type=pruning_type,
@@ -567,7 +565,7 @@ def get_network_generator_efficientnet_sparsyfed(
 
     init_model(untrained_net)
 
-    def generated_net(_config: dict | None) -> EfficientNetB0_CIFAR:
+    def generated_net(_config: dict | None) -> EfficientNet:
         """Return a deep copy of the untrained network."""
 
         return deepcopy(untrained_net)
@@ -579,16 +577,14 @@ def get_network_generator_efficientnet_sparsyfed_no_act(
     alpha: float = 1.0,
     sparsity: float = 0.0,
     num_classes: int = 100,
-) -> Callable[[dict], EfficientNetB0_CIFAR]:
+) -> Callable[[dict], EfficientNet]:
     """Create a SparsyFed (no activation) EfficientNet-B0 generator."""
 
-    untrained_net = EfficientNetB0_CIFAR(
-        num_classes=num_classes,
-    )
+    untrained_net = _build_efficientnet(num_classes=num_classes)
 
     replace_layer_with_sparsyfed_no_act(
         module=untrained_net,
-        name="EfficientNetB0_CIFAR",
+        name="EfficientNetB0",
         alpha=alpha,
         sparsity=sparsity,
     )
@@ -602,7 +598,7 @@ def get_network_generator_efficientnet_sparsyfed_no_act(
 
     init_model(untrained_net)
 
-    def generated_net(_config: dict | None) -> EfficientNetB0_CIFAR:
+    def generated_net(_config: dict | None) -> EfficientNet:
         """Return a deep copy of the untrained network."""
 
         return deepcopy(untrained_net)
@@ -615,16 +611,14 @@ def get_network_generator_efficientnet_zerofl(
     sparsity: float = 0.0,
     num_classes: int = 100,
     pruning_type: str = "unstructured",
-) -> Callable[[dict], EfficientNetB0_CIFAR]:
+) -> Callable[[dict], EfficientNet]:
     """Create a ZeroFL EfficientNet-B0 generator."""
 
-    untrained_net = EfficientNetB0_CIFAR(
-        num_classes=num_classes,
-    )
+    untrained_net = _build_efficientnet(num_classes=num_classes)
 
     replace_layer_with_swat(
         module=untrained_net,
-        name="EfficientNetB0_CIFAR",
+        name="EfficientNetB0",
         alpha=alpha,
         sparsity=sparsity,
         pruning_type=pruning_type,
@@ -640,7 +634,7 @@ def get_network_generator_efficientnet_zerofl(
 
     init_model(untrained_net)
 
-    def generated_net(_config: dict | None) -> EfficientNetB0_CIFAR:
+    def generated_net(_config: dict | None) -> EfficientNet:
         """Return a deep copy of the untrained network."""
 
         return deepcopy(untrained_net)

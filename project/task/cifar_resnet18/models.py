@@ -697,7 +697,18 @@ def get_parameters_to_prune(
             if first_layer:
                 first_layer = False
             else:
-                parameters_to_prune.append((module, "weight", name))
+                weight = getattr(module, "weight", None)
+                if weight is None or not isinstance(weight, torch.nn.Parameter):
+                    log(
+                        logging.WARNING,
+                        (
+                            "Skipping pruning candidate '%s' because it has no weight "
+                            "parameter"
+                        ),
+                        name,
+                    )
+                else:
+                    parameters_to_prune.append((module, "weight", name))
 
         for _name, immediate_child_module in module.named_children():
             add_immediate_child(immediate_child_module, _name)

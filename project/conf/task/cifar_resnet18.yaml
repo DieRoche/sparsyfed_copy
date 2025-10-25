@@ -17,7 +17,7 @@ train_structure: CIFAR_EFFNET_B0_PRUNE
 # train_structure: CIFAR_RN18_FIX_PRUNE
 
 alpha: 1.25
-sparsity: 0.90
+sparsity: 0.50
 mask: 0.0
 
 # Client fit config

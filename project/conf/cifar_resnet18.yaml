@@ -43,10 +43,6 @@ test_clients:
 wandb:
   setup:
     project: compression_FL
-    tags:
-      - strategy_${strategy.name}
-      - seed_${fed.seed}
-      - patitioning_${dataset.name}
     entity: null
     mode: online
     name: sparsyfed_cifar100_effnet_10cl

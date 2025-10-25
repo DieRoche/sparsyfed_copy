@@ -4,6 +4,7 @@ This module contains custom PyTorch modules and functions for implementing Spars
 models in a federated learning setting.
 """
 
+import math
 from copy import deepcopy
 from logging import log
 import logging
@@ -27,23 +28,47 @@ from project.fed.utils.utils import (
 )
 
 from project.task.utils.drop import (
-    drop_nhwc_send_th,
     drop_structured,
     drop_structured_filter,
     drop_threshold,
-    matrix_drop,
 )
 from project.task.utils.spectral_norm import SpectralNormHandler
 
 torch.autograd.set_detect_anomaly(True)
 
 
+def _compute_topk_threshold(tensor: torch.Tensor, keep_ratio: float) -> float:
+    """Return the magnitude threshold corresponding to the keep ratio."""
+
+    if keep_ratio >= 1.0:
+        return -1.0
+
+    flat = tensor.detach().abs().reshape(-1)
+    numel = flat.numel()
+    if numel == 0:
+        return -1.0
+
+    k = max(int(math.ceil(keep_ratio * numel)), 1)
+    if k >= numel:
+        return -1.0
+
+    topk_vals = torch.topk(flat, k, sorted=True).values
+    return float(topk_vals[-1].item())
+
+
 def convolution_backward(
     ctx,
     grad_output,
 ):
-    sparse_input, sparse_weight, bias = ctx.saved_tensors
+    dense_input, sparse_weight, bias = ctx.saved_tensors
     conf = ctx.conf
+    threshold = ctx.prune_threshold
+    pruning_enabled = ctx.pruning_enabled and threshold > 0.0
+
+    if pruning_enabled:
+        sparse_input = drop_threshold(dense_input, threshold)
+    else:
+        sparse_input = dense_input
     input_grad = (
         weight_grad
     ) = (
@@ -101,7 +126,6 @@ class sparsyfed_linear(Function):
 
     @staticmethod
     def forward(ctx, input, weight, bias, sparsity):
-
         if input.dim() == 2 and bias is not None:
             # The fused op is marginally faster
             output = torch.addmm(bias, input, weight.t())
@@ -110,17 +134,24 @@ class sparsyfed_linear(Function):
             if bias is not None:
                 output += bias
 
-        topk = max(1 - sparsity, sparsyfed_linear.threshold)
+        keep_ratio = max(1 - sparsity, sparsyfed_linear.threshold)
+        pruning_enabled = keep_ratio < 1.0
+        threshold = _compute_topk_threshold(input, keep_ratio) if pruning_enabled else -1.0
 
-        sparse_input = matrix_drop(input, topk)
-
-        ctx.save_for_backward(sparse_input, weight, bias)
+        ctx.pruning_enabled = pruning_enabled
+        ctx.prune_threshold = threshold
+        ctx.save_for_backward(input, weight, bias)
         return output
 
     @staticmethod
     def backward(ctx, grad_output):
-        sparse_input, sparse_weight, bias = ctx.saved_tensors
-
+        dense_input, sparse_weight, bias = ctx.saved_tensors
+        threshold = ctx.prune_threshold
+        pruning_enabled = ctx.pruning_enabled and threshold > 0.0
+        if pruning_enabled:
+            sparse_input = drop_threshold(dense_input, threshold)
+        else:
+            sparse_input = dense_input
         grad_input = grad_weight = grad_bias = None
 
         if ctx.needs_input_grad[0]:
@@ -153,6 +184,7 @@ class SparsyFedLinear(nn.Module):
         self.bias = nn.Parameter(torch.empty(out_features)) if self.b else None
         self.spectral_norm_handler = SpectralNormHandler()
         self.sparsity = sparsity
+        self.activation_pruning_enabled = True
 
     def __repr__(self):
         return (
@@ -170,7 +202,7 @@ class SparsyFedLinear(nn.Module):
         return torch.sign(weights) * torch.pow(torch.abs(weights), self.alpha)
 
     def _call_sparsyfed_linear(self, input, weight) -> torch.Tensor:
-        if self.training:
+        if self.training and self.activation_pruning_enabled:
             sparsity = get_tensor_sparsity(weight)
         else:
             # Avoid to sparsify during the evaluation
@@ -195,6 +227,9 @@ class SparsyFedLinear(nn.Module):
         # Return the output
         return output
 
+    def set_activation_pruning(self, enabled: bool) -> None:
+        self.activation_pruning_enabled = enabled
+
 
 class sparsyfed_conv2d(Function):
     threshold = 1e-7
@@ -214,7 +249,6 @@ class sparsyfed_conv2d(Function):
     ):
         # Ensure input tensor is contiguous
         input = input.contiguous()
-
         output = F.conv2d(
             input=input,
             weight=weight,
@@ -225,14 +259,10 @@ class sparsyfed_conv2d(Function):
             groups=groups,
         )
 
-        topk = max(1 - sparsity, sparsyfed_conv2d.threshold)
+        keep_ratio = max(1 - sparsity, sparsyfed_conv2d.threshold)
+        pruning_enabled = keep_ratio < 1.0
 
-        sparse_input = matrix_drop(input, topk)
-        if in_threshold < 0.0:
-            sparse_input, in_threshold_tensor = drop_nhwc_send_th(input, topk)
-            in_threshold = in_threshold_tensor.item()
-        else:
-            sparse_input = drop_threshold(input, in_threshold)
+        threshold = _compute_topk_threshold(input, keep_ratio) if pruning_enabled else -1.0
 
         ctx.conf = {
             "stride": stride,
@@ -240,10 +270,12 @@ class sparsyfed_conv2d(Function):
             "dilation": dilation,
             "groups": groups,
         }
+        ctx.pruning_enabled = pruning_enabled
+        ctx.prune_threshold = threshold
 
-        ctx.save_for_backward(sparse_input, weight, bias)
+        ctx.save_for_backward(input, weight, bias)
 
-        return output, in_threshold
+        return output, threshold
 
     # Use @once_differentiable by default unless we intend to double backward
     @staticmethod
@@ -296,6 +328,7 @@ class SparsyFedConv2D(nn.Module):
         self.epoch = 0
         self.batch_idx = 0
         self.spectral_norm_handler = SpectralNormHandler()
+        self.activation_pruning_enabled = True
 
     def __repr__(self):
         return (
@@ -317,7 +350,7 @@ class SparsyFedConv2D(nn.Module):
 
     def _call_sparsyfed_conv2d(self, input, weight) -> torch.Tensor:
 
-        if self.training:
+        if self.training and self.activation_pruning_enabled:
             # for the activation the sparsity used is proportional to the weight sparsity
             sparsity = get_tensor_sparsity(weight)
         else:
@@ -356,6 +389,9 @@ class SparsyFedConv2D(nn.Module):
             )
 
         return self._call_sparsyfed_conv2d(input, sparsyfed_weight)
+
+    def set_activation_pruning(self, enabled: bool) -> None:
+        self.activation_pruning_enabled = enabled
 
 
 class SparsyFedConv2DEffnet(nn.Module):
@@ -427,6 +463,7 @@ class SparsyFedConv2DEffnet(nn.Module):
         self.groups = groups
         self.padding_mode = padding_mode
         self.b = bias
+        self.activation_pruning_enabled = True
 
     def __repr__(self) -> str:
         return (
@@ -448,7 +485,7 @@ class SparsyFedConv2DEffnet(nn.Module):
         return torch.sign(weight) * torch.pow(torch.abs(weight), self.alpha)
 
     def _call_sparsyfed_conv2d(self, input: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
-        if self.training:
+        if self.training and self.activation_pruning_enabled:
             sparsity = get_tensor_sparsity(weight)
         else:
             sparsity = 0.0
@@ -480,7 +517,25 @@ class SparsyFedConv2DEffnet(nn.Module):
                 torch.abs(self.weight), self.alpha
             )
 
+        if self.groups == self.in_channels:
+            assert self.weight.shape[1] == 1, "Depthwise conv expected channel dimension 1"
+            assert (
+                self.out_channels % self.groups == 0
+            ), "Depthwise convolution channel mismatch"
+            multiplier = self.out_channels // self.groups
+            assert self.weight.shape[0] == self.out_channels, "Unexpected out channel layout"
+            assert sparsyfed_weight.shape == self.weight.shape, "Weight proxy shape mismatch"
+            assert sparsyfed_weight.stride() == self.weight.stride(), "Weight proxy stride mismatch"
+            if multiplier > 1:
+                expected_out = self.groups * multiplier
+                assert (
+                    self.weight.shape[0] == expected_out
+                ), "Channel multiplier changed during parametrization"
+
         return self._call_sparsyfed_conv2d(input, sparsyfed_weight)
+
+    def set_activation_pruning(self, enabled: bool) -> None:
+        self.activation_pruning_enabled = enabled
 
     @classmethod
     def from_conv(

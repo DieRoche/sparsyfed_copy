@@ -3,17 +3,17 @@
 # Choose the model and dataset
 #model_and_data: CIFAR_RN18
 #model_and_data: CIFAR_EFFNET_B0
-#model_and_data: CIFAR_SPARSYFED_RN18
+model_and_data: CIFAR_SPARSYFED_RN18
 # model_and_data: CIFAR_SPARSYFED_NA_RN18
 # model_and_data: CIFAR_ZEROFL_RN18
 # model_and_data: CIFAR_FLASH_RN18
-model_and_data: CIFAR_SPARSYFED_EFFNET_B0
+#model_and_data: CIFAR_SPARSYFED_EFFNET_B0
 
 # Choose the train, test and server fed_eval functions
 #train_structure: CIFAR_RN18
 # train_structure: CIFAR_EFFNET_B0
-train_structure: CIFAR_EFFNET_B0_PRUNE
-#train_structure: CIFAR_RN18_PRUNE
+#train_structure: CIFAR_EFFNET_B0_PRUNE
+train_structure: CIFAR_RN18_PRUNE
 # train_structure: CIFAR_RN18_FIX_PRUNE
 
 alpha: 1.25

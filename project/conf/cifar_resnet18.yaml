@@ -45,11 +45,9 @@ wandb:
     project: compression_FL
     tags:
       - strategy_${strategy.name}
-      - seed_${fed.seed}
-      - patitioning_${dataset.name}
     entity: null
     mode: online
-    name: sparsyfed_cifar100_effnet_10cl
+    name: sparsyfed_cifar10_resnet_10cl
 
 # For Ray cluster usage
 # leave null unless you need 

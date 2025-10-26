@@ -10,7 +10,7 @@ partition_dir: ./data/CIFAR${dataset.num_classes}/lda_${dataset.lda_alpha}_${dat
 
 # How many clients to create
 num_clients: 10
-num_classes: 100
+num_classes: 10
 
 # How large should the test set of each client
 # be relative to the train set

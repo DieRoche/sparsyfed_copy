@@ -262,7 +262,7 @@ class SparsyFedConv2D(nn.Module):
         alpha: float,
         in_channels: int,
         out_channels: int,
-        kernel_size: int = 3,
+        kernel_size: Union[_size, _int] = 3,
         stride: Union[_size, _int] = 1,
         padding: Union[_size, _int] = 1,
         dilation: Union[_size, _int] = 1,
@@ -274,13 +274,25 @@ class SparsyFedConv2D(nn.Module):
         period: int = 1,
     ):
         super(SparsyFedConv2D, self).__init__()
+        if in_channels % groups != 0:
+            raise ValueError(
+                "in_channels must be divisible by groups for SparsyFedConv2D"
+            )
+
         self.alpha = alpha
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.kernel_size = _pair(kernel_size)
         self.b = bias
+
+        in_channels_per_group = in_channels // groups
         self.weight = nn.Parameter(
-            torch.empty(out_channels, in_channels, kernel_size, kernel_size)
+            torch.empty(
+                out_channels,
+                in_channels_per_group,
+                self.kernel_size[0],
+                self.kernel_size[1],
+            )
         )
         self.bias = nn.Parameter(torch.empty(out_channels)) if bias else None
         self.stride = _pair(stride)

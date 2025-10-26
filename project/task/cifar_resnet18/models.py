@@ -329,10 +329,12 @@ def replace_layer_with_sparsyfed(
                 alpha=alpha,
                 in_channels=target_attr.in_channels,
                 out_channels=target_attr.out_channels,
-                kernel_size=target_attr.kernel_size[0],
+                kernel_size=target_attr.kernel_size,
                 bias=target_attr.bias is not None,
                 padding=target_attr.padding,
                 stride=target_attr.stride,
+                dilation=target_attr.dilation,
+                groups=target_attr.groups,
                 sparsity=sparsity,
                 pruning_type=pruning_type,
                 warm_up=0,
@@ -350,7 +352,9 @@ def replace_layer_with_sparsyfed(
             setattr(module, attr_str, new_conv)
 
     for model, immediate_child_module in module.named_children():
-        replace_layer_with_sparsyfed(immediate_child_module, model, alpha, sparsity)
+        replace_layer_with_sparsyfed(
+            immediate_child_module, model, alpha, sparsity, pruning_type
+        )
 
 
 def replace_layer_with_sparsyfed_effnet(
@@ -550,7 +554,7 @@ def get_network_generator_efficientnet_sparsyfed(
         num_classes=num_classes,
     )
 
-    replace_layer_with_sparsyfed_effnet(
+    replace_layer_with_sparsyfed(
         module=untrained_net,
         name="EfficientNetB0_CIFAR",
         alpha=alpha,

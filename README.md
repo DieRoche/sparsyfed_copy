@@ -1,161 +1,321 @@
-# SparsyFed: Sparse Adaptive Federated Training
+# SparsyFed Implementation Audit
 
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+## 1. Scope
 
-This repository contains the official implementation of **"SparsyFed: Sparse Adaptive Federated Training"** ([arXiv:2504.05153](https://arxiv.org/abs/2504.05153)).
+This document audits the **actual executable implementation path** for `METHOD_NAME = SparsyFed` in this repository.
 
-## Abstract
-Sparse training is often adopted in cross-device federated learning (FL) environments where constrained devices collaboratively train a machine learning model on private data by exchanging pseudo-gradients across heterogeneous networks. Although sparse training methods can reduce communication overhead and computational burden in FL, they are often not used in practice for the following key reasons: (1) data heterogeneity makes it harder for clients to reach consensus on sparse models compared to dense ones, requiring longer training; (2) methods for obtaining sparse masks lack adaptivity to accommodate very heterogeneous data distributions, crucial in cross-device FL; and (3) additional hyperparameters are required, which are notably challenging to tune in FL. This paper presents SparsyFed, a practical federated sparse training method that critically addresses the problems above. Previous works have only solved one or two of these challenges at the expense of introducing new trade-offs, such as clients' consensus on masks versus sparsity pattern adaptivity. We show that SparsyFed simultaneously (1) can produce 95% sparse models, with negligible degradation in accuracy, while only needing a single hyperparameter, (2) achieves a per-round weight regrowth 200 times smaller than previous methods, and (3) allows the sparse masks to adapt to highly heterogeneous data distributions and outperform all baselines under such conditions.
+Primary path audited:
+- Entry point: `project/main.py` (Hydra default config: `config_name="cifar_resnet18"`).
+- Task config selected by default: `project/conf/task/cifar_resnet18.yaml`.
+- Strategy selected by default: `project/conf/strategy/fedavgNZ.yaml`.
 
-## Pipeline Overview
+Interpretation rule used throughout this audit:
+- **Used in active pipeline** = executed when running default `project.main` with the current default configs.
+- **Exists in repository** = implemented somewhere but not necessarily reached by the active path.
 
-![SparsyFed Pipeline](assets/sparsyfed_pipeline.svg)
+---
 
-*SparsyFed pipeline: (1) Server broadcasts the global model $\omega_t$. (2) Client $i$ re-parameterizes local weights. (3) Executes a forward pass on batch $\mathcal{B}$. (4a) Computes layer-wise sparsity $s_t$. (4b) Prunes activations using $s_t$ and stores them. (5) Computes gradients. (6) Applies gradients. (7) Computes model updates and applies `Top-K` pruning. (8) Sends sparse updates $\Delta \tilde{\omega}_{i}^{t}$ back to the server. (9) Applies server optimizer to obtain the global model. Steps (2-6) repeat until convergence.*
+## 2. High-Level Verdict
 
+`SparsyFed` is implemented here primarily as a **model-layer behavior modification during local training** (custom linear/conv modules with sparse activation/input handling in autograd), **not as an explicit client payload compression protocol**.
 
+Key findings:
+- Activation of SparsyFed depends mainly on `task.model_and_data` selecting SparsyFed model generators (for CIFAR default: `CIFAR_SPARSYFED_RN18`).
+- Client uploads are still Flower `Parameters` (dense ndarray list serialized by Flower), not an explicit sparse/quantized payload object.
+- Upload/download traffic logging is estimated from serialized parameter byte size, and upload uses `len(fit_results) + len(failures)` as multiplier.
+- FLOPs logging exists (`round_flops`, `total_flops`) but covers only local-train estimate; compression/decompression FLOPs are logged as zero unless some client explicitly overrides.
 
+---
 
-## Table of Contents
-- [SparsyFed: Sparse Adaptive Federated Training](#sparsyfed-sparse-adaptive-federated-training)
-  - [Abstract](#abstract)
-  - [Pipeline Overview](#pipeline-overview)
-  - [Setup](#setup)
-  - [Running Experiments](#running-experiments)
-    - [Quick start](#quick-start)
-    - [Dataset Preparation](#dataset-preparation)
-    - [Running SparsyFed](#running-sparsyfed)
-    - [Continuing Training](#continuing-training)
-  - [Implemented Tasks](#implemented-tasks)
-  - [Project Structure](#project-structure)
-  - [Citation](#citation)
-  - [License](#license)
+## 3. Actual Execution Pipeline
 
+1. `project/main.py` loads Hydra config `cifar_resnet18` by default.
+2. `dispatch_data(cfg)` resolves to CIFAR dispatch and selects model/data generator from `task.model_and_data`.
+3. With default task config (`CIFAR_SPARSYFED_RN18`), model generator is `get_network_generator_resnet_sparsyfed(...)`.
+4. This replaces eligible `nn.Conv2d`/`nn.Linear` layers with SparsyFed modules before training.
+5. Flower simulation runs with `WandbServer` and strategy `FedAvgNZ`.
+6. Each round:
+   - server sends current global parameters to sampled clients,
+   - clients train locally,
+   - clients return updated full parameters,
+   - server aggregates via `FedAvgNZ.aggregate_fit` (weighted average variant),
+   - server evaluates centrally and optionally distributed.
+7. WandB logging is performed through `WandbHistory` and server-side metric augmentation in `WandbServer`.
 
-## Setup
+---
 
-The basic setup has been simplified to a single `setup.sh` script using [Poetry](https://python-poetry.org/), [pyenv](https://github.com/pyenv/pyenv), and [pre-commit](https://pre-commit.com/). It requires only minimal user input regarding the installation locations of `pyenv` and `poetry`, and will install the specified Python version. All dependencies are placed in the local `.venv` directory.
+## 4. Method Activation and Required Flags
 
+### Activation conditions (active path)
 
-```bash
-./setup.sh 
-```
+| Item | Where | Required value for active SparsyFed path | Notes |
+|---|---|---|---|
+| Config entry point | `project/main.py` | Hydra default `cifar_resnet18` | This is the default executable path. |
+| Model selection | `project/conf/task/cifar_resnet18.yaml` | `task.model_and_data: CIFAR_SPARSYFED_RN18` | This is the key SparsyFed switch for default path. |
+| Train function selection | `project/conf/task/cifar_resnet18.yaml` | `task.train_structure: CIFAR_RN18_PRUNE` | Uses prune-style training function wrapper. |
+| SparsyFed params | `project/conf/task/cifar_resnet18.yaml` | `alpha`, `sparsity` | Passed to SparsyFed layer generators. |
 
-If `poetry`, `pyenv`, and/or the correct Python version are already installed, they will not be installed again. If they are not installed, you must provide paths to the desired installation locations. When running on a cluster, this would typically be the location of the shared file system.
+### Method-specific vs generic vs unused
 
-By default, pre-commit only runs hooks on files staged for commit. If you wish to run all pre-commit hooks without committing or pushing, use:
+- **Method-specific and used**:
+  - `project/task/utils/sparsyfed_modules.py` (`SparsyFedLinear`, `SparsyFedConv2D`, `sparsyfed_linear`, `sparsyfed_conv2d`).
+  - CIFAR model replacement functions in `project/task/cifar_resnet18/models.py`.
+- **Generic FL and used**:
+  - `project/client/client.py` (NumPyClient fit/evaluate lifecycle).
+  - `project/fed/server/wandb_server.py` (round loop, traffic/FLOPs accumulation).
+  - `project/fed/server/strategy/fedavgNZ.py` (server aggregation).
+- **Exists but not used in active default path**:
+  - Speech and ViT SparsyFed dispatch paths.
+  - no-act SparsyFed variants (`*_SPARSYFED_NA_*`) unless selected via config.
+  - dataset preparation routines are not automatically executed in `main.py` (`download_and_preprocess` call is commented).
 
-```bash  
-poetry run pre-commit run --all-files --hook-stage push
-```
-## Running Experiments
+---
 
-Run the task from the root `sparsyfed` directory, not from the `sparsyfed/project` directory.  
-An example of a base task would be:
+## 5. Client-Side Processing After Local Training
 
-```bash
-poetry run python -m project.main --config-name=cifar_resnet18
-```
+### Object immediately after local training
 
-The default task should have created a folder in `sparsyfed/outputs`. This folder contains the results of the experiment.
+In `Client.fit`, after calling task-specific train function, the client computes:
+- `updated_parameters = generic_get_parameters(self.net)`
 
-To log your experiments to Weights & Biases (wandb), log in to wandb and then enable it via the command:
+This is a **full list of NumPy arrays from `state_dict()`**, sorted by key.
 
-```bash
-poetry run python -m project.main --config-name=cifar_resnet18 use_wandb=true
-```
+### Transformations before server uses it
 
-### Dataset Preparation
+| Processing type | Status in active path | Evidence/behavior |
+|---|---|---|
+| Delta computation (`new - old`) | **Missing** | Client directly returns full updated parameters. |
+| Gradient/update clipping for payload | **Missing** | No client-side post-training clipping stage before return. |
+| Payload normalization | **Missing** | No normalization pass on outgoing payload. |
+| Explicit sparsification of payload tensors | **Missing (for transmission)** | SparsyFed sparsity is inside local forward/backward behavior, not payload rewrite. |
+| Mask packaging | **Missing (for transmission)** | No `(values, indices, mask)` payload emitted. |
+| Quantization | **Missing** | No quant/dequant in client upload path. |
+| Low-rank decomposition | **Missing** | No SVD/low-rank object construction in upload path. |
+| Serialization/compression before handoff | **Missing for FL transport** | Optional `np.savez_compressed` is only for local artifact dump when `client_updates_dir` is provided in config.extra; not used for Flower upload. |
 
-Before running the main experiments, you need to prepare and partition the dataset:
+---
 
-1. Configure the dataset parameters in `conf/dataset/cifar_lda.yaml`:
-    - Set the `dataset_dir` and `partition_dir` paths.
-    - Configure `num_clients`, `val_ratio`, and `seed`.
-    - Set `num_classes` for CIFAR-10 or CIFAR-100.
-    - Adjust data heterogeneity using `lda_alpha`, and set `lda` to `true`.
+## 6. Client-to-Server Payload and Transmission Logic
 
-2. Download and partition the dataset by running the following command from the root directory:
-    ```bash 
-        poetry run python -m project.task.cifar_resnet18.dataset_preparation
-    ```
-3. Configure model parameters in ``conf/task/cifar_resnet18.yaml`` - the default configuration is for SparsyFed
+- **Actual uploaded payload object**: `updated_parameters` (Python list of NumPy ndarrays) from `generic_get_parameters(self.net)`.
+- **Handoff point**: `Client.fit` return tuple `(updated_parameters, num_samples, metrics)`.
+- **Framework wrapping**: Flower converts ndarray list to `Parameters` for transport.
+- **Representation type**: full model weights, not sparse tuple/delta/custom compressed object.
+- **Transport nature in this repository**: in Flower simulation, logical client/server communication is framework-managed; user code constructs payload in-memory and returns via API.
+- **Explicit user-level serialization before handoff**: none in active path.
 
-### Running SparsyFed
+---
 
-To run a SparsyFed experiment with specific parameters:
+## 7. Upload Traffic Validation
 
-```bash 
-        poetry run python -m project.main --config-name=cifar_resnet18 task.model_and_data=CIFAR_SPARSYFED_RN18 task.train_structure=CIFAR_RN18_PRUNE task.alpha=1.25 task.sparsity=0.95 strategy=fedavg task.fit_config.run_config.learning_rate=0.5
-```
-This runs SparsyFed on CIFAR with:
-- 95% sparsity
-- ResNet-18 model architecture
-- FedAvg strategy
-- Learning rate of 0.5
+`WandbServer.fit` computes upload traffic as:
 
+- `on_wire_upload = parameters_size_bytes(fit_results[0][1].parameters)` (or fallback from previous round/global params).
+- `upload_traffic = active_clients * on_wire_upload`.
+- `active_clients = len(fit_results) + len(failures)`.
 
-### Continuing Training
-Once a complete experiment has run, you can continue it for a specified number of epochs by running the following command from the root directory and setting the output directory to the previous one.
+Validation:
 
-- ```bash 
-    poetry run python -m project.main --config-name=cifar_resnet18 reuse_output_dir=<path_to_your_output_directory>
-    ```
+| Check | Verdict | Detail |
+|---|---|---|
+| `upload_traffic_per_client` corresponds to payload size | **PARTIAL** | Uses size from first successful result (or fallback), assumes homogeneous size across clients. |
+| `upload_traffic = upload_traffic_per_client * number_of_active_users` | **PASS (formula)** | Implemented exactly with `active_clients * on_wire_upload`. |
+| Multiplier uses active users vs total users | **PARTIAL** | Uses `fit_results + failures`, not configured total clients; however failures are counted as upload participants even if no payload arrived. |
+| Derived from actual transmitted payload | **PARTIAL** | Size derived from Flower `Parameters` tensor bytes; still estimated at aggregate level, not summed per-client payload objects. |
 
+---
 
-### Implemented Tasks
-The framework currently implements three tasks:
-- `cifar_resnet18`: CIFAR-10/100 dataset with a ResNet-18 model
-- `speech_resnet18`: Google Speech Commands dataset with a ResNet-18 model
-- `cub_vit`: CUB-200 dataset with a ViT model
+## 8. Server-Side Reconstruction / Decoding
 
-For all the tasks, we have implemented several FL methods beyond SparsyFed, including `Top-K`, `ZeroFL`, and `FLASH`.
+In active path there is **no explicit decode/reconstruct stage** such as:
+- sparse reconstruction,
+- dequantization,
+- low-rank reconstruction,
+- custom deserialization.
 
+Server strategy consumes Flower-decoded ndarrays via `parameters_to_ndarrays(fit_res.parameters)` in `FedAvgNZ.aggregate_fit` and aggregates directly.
 
+So reconstruction is only the standard Flower parameter conversion, not method-specific compression decoding.
 
+---
 
-## Project Structure
+## 9. Global Aggregation / Global Update Logic
 
-The codebase follows a modular structure:
+Server update behavior (active default strategy `FedAvgNZ`):
+- Collect successful client `FitRes`.
+- Convert each client `Parameters` -> ndarrays.
+- Aggregate with custom `aggregate(results)` (weighted by client sample count, nonzero-mask-influenced expression).
+- Convert aggregated ndarrays back to `Parameters` and set as new global model.
 
-```
-project
-├── client          # Client implementation
-├── conf            # Configuration files using Hydra
-├── dispatch        # Configuration-to-task mapping
-├── fed             # Federated learning core functionality
-├── main.py         # Entry point
-├── task            # Task implementations (models, data, training)
-├── types           # Type definitions
-└── utils           # Utility functions
-```
+Important clarifications:
+- Server does **not** perform optimizer-based gradient descent step.
+- Global update is aggregation-driven parameter replacement.
+- The aggregation uses full client parameter tensors, not client deltas.
 
-The `task` directory is the main entry point for users to modify and run experiments. It contains the following components:
-- `dataset_preparation`: Prepares and partitions datasets
-- `dataset`: Creates dataloaders for clients and server
-- `dispatch`: Maps configurations to task requirements
-- `models`: Creates models based on configurations
-- `train_test`: Implements training and testing
+---
 
+## 10. Server-to-Client Payload and Download Logic
 
+Server-to-client payload is `self.parameters` from Flower server state (global model parameters).
 
-## Citation
-If you find this code useful, please consider citing our paper:
+Before sending to clients in the next round, there is no explicit:
+- compression,
+- quantization,
+- sparsification transform,
+- custom serialization in user code.
 
-```bibtex
-@misc{guastella2025sparsyfedsparseadaptivefederated,
-      title={SparsyFed: Sparse Adaptive Federated Training}, 
-      author={Adriano Guastella and Lorenzo Sani and Alex Iacob and Alessio Mora and Paolo Bellavista and Nicholas D. Lane},
-      year={2025},
-      eprint={2504.05153},
-      archivePrefix={arXiv},
-      primaryClass={cs.LG},
-      url={https://arxiv.org/abs/2504.05153}, 
-}
-```
-## License
-This project is licensed under the Apache License 2.0. See the [LICENSE](LICENSE) file for details.
+Download traffic accounting uses `parameters_size_bytes(self.parameters)` multiplied by `active_clients` (same `active_clients` definition as upload).
 
+---
 
+## 11. Download Traffic and Overall Traffic Validation
 
+| Check | Verdict | Detail |
+|---|---|---|
+| `download_traffic` from actual server-to-client payload | **PARTIAL** | Computed from current global `Parameters` byte size, multiplied by active count; aggregate estimate, not per-client measured transmission. |
+| `overall_traffic = upload_traffic + download_traffic` | **FAIL (per-round interpretation)** | Logged `overall_traffic` is cumulative total (`total_upload_traffic + total_download_traffic`) up to current round, not per-round sum. |
+| Includes both upload and download components | **PASS (cumulative)** | Both are accumulated and combined. |
+
+---
+
+## 12. FLOPs Logging Validation
+
+### `round_flops`
+- Produced on each client in `Client.fit` via `_estimate_round_flops(...)`.
+- Includes estimated local training cost derived from:
+  - profiled dense forward FLOPs per sample,
+  - scaled by inferred parameter density,
+  - multiplied for backward and optimizer cost constants.
+
+### `total_flops`
+- On server, `_update_flop_metrics` sums all client `round_flops` for the round, then cumulatively accumulates into `_flop_totals["total_flops"]`.
+
+### What is included vs missing
+
+| Component | Included in `round_flops` / `total_flops`? |
+|---|---|
+| Local training FLOPs | **Yes (estimated)** |
+| Server-side aggregation FLOPs | **No** |
+| Communication/compression FLOPs | **No in `round_flops`** |
+| Evaluation FLOPs | **No** |
+
+Conclusion: variable names exist and are consistent with local-train FLOP accounting only; they are not full end-to-end system FLOPs.
+
+---
+
+## 13. Compression / Decompression FLOPs Validation
+
+Metrics present:
+- `round_flops_compression`
+- `round_flops_decompression`
+- `total_flops_compression`
+- `total_flops_decompression`
+- `total_flops_including_compression`
+
+Active behavior:
+- Client sets defaults: compression/decompression round FLOPs = `0.0` unless overridden by task-specific code.
+- No active client/server compression pipeline contributes non-zero values in audited path.
+- Server simply aggregates those provided values.
+
+Therefore, `total_flops_compression` currently reports cumulative zeros in the default SparsyFed path and does **not** capture real compression/decompression workload (because no such workload is implemented in transmission path).
+
+---
+
+## 14. Accuracy Logging Validation
+
+`acc_servers_highest` is logged in `WandbHistory.add_metrics_centralized` by renaming centralized metric key `test_accuracy`.
+
+Validation:
+- Updated every time centralized evaluation metric includes `test_accuracy`.
+- Uses server-side federated eval loader/test function (from `get_fed_eval_fn` path).
+- Represents centralized global-model test accuracy for that round.
+- Name `acc_servers_highest` is misleading: no best-so-far/max tracking logic is implemented; it logs round value directly.
+
+---
+
+## 15. Experiment Configuration Validation
+
+Validation target requested:
+- Dirichlet alpha = 0.5
+- train/validation split = 80/20
+- optimizer = SGD
+- learning rate = 0.01
+- batch size = 128
+
+| Item | Verdict | Evidence |
+|---|---|---|
+| Dirichlet alpha = 0.5 | **PARTIAL** | Config default `dataset.lda_alpha: 0.5` in CIFAR dataset config. Enforced only if dataset was partitioned with this config; main pipeline does not regenerate partitions by default. |
+| train/validation split = 80/20 | **PARTIAL** | `dataset.val_ratio: 0.2` exists in config. Active training reads pre-saved `train.pt`/`test.pt`; split enforcement depends on prior dataset preparation, not runtime training loop. |
+| optimizer = SGD | **PASS (default CIFAR path)** | CIFAR `train`/`fixed_train` use `torch.optim.SGD`. |
+| learning rate = 0.01 | **PASS (default CIFAR task config)** | `task.fit_config.run_config.learning_rate: 0.01` and passed through on_fit config. |
+| batch size = 128 | **PASS (default CIFAR task config)** | `task.fit_config.dataloader_config.batch_size: 128` used by client train dataloader. |
+
+---
+
+## 16. WandB Metrics Audit
+
+### Logged in active SparsyFed path (when `use_wandb=true`)
+
+| Metric key in WandB | Source |
+|---|---|
+| `training_loss_highest` | centralized loss logging |
+| `acc_servers_highest` | centralized `test_accuracy` key rename |
+| `distributed_test_accuracy` | distributed eval rename of `test_accuracy` |
+| `upload_traffic`, `download_traffic`, `upload_traffic_per_client`, `overall_traffic` | server per-round augmentation |
+| `round_flops`, `round_flops_compression`, `round_flops_decompression` | aggregated from client metrics |
+| `total_flops`, `total_flops_compression`, `total_flops_decompression`, `total_flops_including_compression` | server cumulative FLOP totals |
+| `server_to_client_nonzero`, `client_to_server_nonzero`, `*_density`, `nonzero_communication_total`, `learning_rate` | propagated through fit metric aggregation/logging |
+
+### Exists but potentially misleading
+- `acc_servers_highest`: not best-so-far.
+- `overall_traffic`: cumulative total, not isolated per-round total.
+- compression FLOP totals: present but zero in active path.
+
+---
+
+## 17. Faithfulness to the Intended Method Structure
+
+Expected SparsyFed-like structure implied by method name/repo organization vs implementation:
+
+| Stage | Expected conceptually | Actual in code | Classification |
+|---|---|---|---|
+| Sparse-aware local computation | Sparse behavior in local train path | Implemented via SparsyFed custom modules/autograd in model forward/backward | **Correctly implemented** |
+| Client-side communication compression | Sparse/encoded client upload representation | Not implemented; uploads are full parameters | **Missing** |
+| Server-side decode/reconstruct | Rebuild sparse/quantized payloads | No method-specific decode stage | **Missing** |
+| Communication-aware traffic from real compressed payload | Byte counts from actual compressed object | Uses parameter-size estimates and first-result proxy size | **Partially implemented** |
+| Compression FLOP accounting | Non-zero compression/decompression operation costs | Metrics exist but default to zero | **Partially implemented / effectively missing ops** |
+| End-to-end method-specific FL strategy | Dedicated SparsyFed aggregation/optimization path | Uses generic `FedAvgNZ` strategy; SparsyFed mostly in client model layers | **Implemented differently** |
+
+---
+
+## 18. Mismatches, Risks, and Ambiguities
+
+1. **Method identity mismatch risk**: The repository labels SparsyFed mainly through model-layer substitutions, while communication path remains dense full-parameter exchange.
+2. **Traffic metric ambiguity**: upload/download are estimated from parameter byte sizes and active client count including failures.
+3. **`overall_traffic` naming risk**: variable sounds per-round but is cumulative.
+4. **`acc_servers_highest` naming risk**: suggests running maximum; actual behavior logs per-round centralized accuracy.
+5. **Dataset split/Dirichlet reproducibility ambiguity**: config specifies split and alpha, but runtime may use pre-existing partition files; generation function is not automatically invoked from main.
+6. **Compression FLOPs completeness gap**: metric names imply broad accounting but active path contributes zero compression/decompression work.
+
+---
+
+## 19. Final Checklist
+
+| Validation Item | Status |
+|---|---|
+| 1. Method activation and actual pipeline | **PASS** |
+| 2. Post-local-training preprocessing | **PASS (none found, explicitly verified)** |
+| 3. FLOPs reporting in wandb (`round_flops`, `total_flops`) | **PARTIAL** |
+| 4. Client-side compression logic | **FAIL (missing in active payload path)** |
+| 5. Flags/config and wandb linkage | **PASS** |
+| 6. Client-to-server transmission process | **PASS** |
+| 7. Upload traffic validation | **PARTIAL** |
+| 8. Server-side decoding / reconstruction | **PASS (none in active path, explicitly verified)** |
+| 9. Global training / server update | **PASS** |
+| 10. Server-to-client model processing | **PASS (none in active path, explicitly verified)** |
+| 11. Download traffic and overall traffic | **PARTIAL** |
+| 12. Compression/decompression FLOPs | **PARTIAL** |
+| 13. Server-side accuracy validation (`acc_servers_highest`) | **PARTIAL** |
+| 14. Standard experiment configuration validation | **PARTIAL** |
+| 15. Comparison with intended method behavior | **PASS** |
 

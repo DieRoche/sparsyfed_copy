@@ -47,7 +47,7 @@ wandb:
       - strategy_${strategy.name}
     entity: null
     mode: online
-    name: sparsyfed_cifar10_resnet_10cl
+    name: Sparsyfed_cifar${dataset.num_classes}_resnet_${fed.num_clients_per_round}cl
 
 # For Ray cluster usage
 # leave null unless you need 

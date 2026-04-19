@@ -315,7 +315,6 @@ class Client(fl.client.NumPyClient):
             )
             metrics["round_flops"] = round_flops
             metrics.setdefault("round_flops_compression", 0.0)
-            metrics.setdefault("round_flops_decompression", 0.0)
 
             updates_dir_raw = config.extra.get("client_updates_dir")
             if updates_dir_raw:

@@ -59,11 +59,8 @@ class WandbServer(Server):
         self.history: History | None = history
         self.save_parameters_to_file = save_parameters_to_file
         self.save_files_per_round = save_files_per_round
-        self._last_upload_size_bytes: float | None = None
         self._flop_totals: dict[str, float] = {
             "total_flops": 0.0,
-            "total_flops_including_compression": 0.0,
-            "total_flops_decompression": 0.0,
             "total_flops_compression": 0.0,
         }
         self._flop_metrics_available = False
@@ -126,8 +123,6 @@ class WandbServer(Server):
         self.save_parameters_to_file(self.parameters)
         self.save_files_per_round(0)
 
-        total_upload_traffic = 0.0
-        total_download_traffic = 0.0
         last_logged_round: int | None = None
 
         for current_round in range(1, num_rounds + 1):
@@ -147,43 +142,20 @@ class WandbServer(Server):
 
                 fit_results, failures = fit_results_and_failures
 
-                active_clients = len(fit_results) + len(failures)
-                download_traffic = active_clients * parameters_size_bytes(
-                    self.parameters
+                active_clients = int(len(fit_results) + len(failures))
+                upload_traffic = self._compute_upload_traffic_for_round(fit_results)
+                download_traffic = self._compute_download_traffic_for_round(
+                    server_payload=self.parameters,
+                    active_clients=active_clients,
                 )
-                if fit_results:
-                    on_wire_upload = parameters_size_bytes(
-                        fit_results[0][1].parameters
-                    )
-                    self._last_upload_size_bytes = float(on_wire_upload)
-                elif self._last_upload_size_bytes is not None:
-                    on_wire_upload = self._last_upload_size_bytes
-                else:
-                    on_wire_upload = parameters_size_bytes(self.parameters)
-                    self._last_upload_size_bytes = float(on_wire_upload)
-
-                upload_traffic = active_clients * float(on_wire_upload)
-
-                total_upload_traffic += upload_traffic
-                total_download_traffic += download_traffic
 
                 if fit_metrics is None:
                     fit_metrics = {}
 
-                log(
-                    INFO,
-                    "Round %s upload size per client (bytes): %s",
-                    current_round,
-                    on_wire_upload,
-                )
-
                 fit_metrics.update({
                     "upload_traffic": float(upload_traffic),
                     "download_traffic": float(download_traffic),
-                    "upload_traffic_per_client": float(on_wire_upload),
-                    "overall_traffic": float(
-                        total_upload_traffic + total_download_traffic
-                    ),
+                    "overall_traffic": float(upload_traffic + download_traffic),
                 })
 
                 self._update_flop_metrics(
@@ -252,12 +224,7 @@ class WandbServer(Server):
             fallback_metrics: dict[str, float] = {
                 "upload_traffic": 0.0,
                 "download_traffic": 0.0,
-                "upload_traffic_per_client": float(
-                    self._last_upload_size_bytes or 0.0
-                ),
-                "overall_traffic": float(
-                    total_upload_traffic + total_download_traffic
-                ),
+                "overall_traffic": 0.0,
             }
 
             if self._flop_metrics_available:
@@ -265,16 +232,9 @@ class WandbServer(Server):
                     {
                         "round_flops": 0.0,
                         "round_flops_compression": 0.0,
-                        "round_flops_decompression": 0.0,
                         "total_flops": self._flop_totals["total_flops"],
                         "total_flops_compression": self._flop_totals[
                             "total_flops_compression"
-                        ],
-                        "total_flops_decompression": self._flop_totals[
-                            "total_flops_decompression"
-                        ],
-                        "total_flops_including_compression": self._flop_totals[
-                            "total_flops_including_compression"
                         ],
                     }
                 )
@@ -289,6 +249,30 @@ class WandbServer(Server):
         elapsed = end_time - start_time
         log(INFO, "FL finished in %s", elapsed)
         return history
+
+    def _compute_upload_traffic_for_round(
+        self,
+        fit_results: list[tuple[ClientProxy, FitRes]],
+    ) -> float:
+        """Return the per-round upload traffic from successful active clients."""
+
+        return float(
+            sum(
+                parameters_size_bytes(fit_res.parameters)
+                for _, fit_res in fit_results
+            )
+        )
+
+    def _compute_download_traffic_for_round(
+        self,
+        server_payload: Parameters | None,
+        active_clients: int,
+    ) -> float:
+        """Return the per-round download traffic to active clients."""
+
+        if active_clients <= 0:
+            return 0.0
+        return float(active_clients * parameters_size_bytes(server_payload))
 
     def _update_flop_metrics(
         self,
@@ -305,22 +289,31 @@ class WandbServer(Server):
             The aggregated metrics dictionary for the round.
         """
 
-        flop_round_keys = (
-            "round_flops",
-            "round_flops_compression",
-            "round_flops_decompression",
-        )
-
-        round_values = {key: 0.0 for key in flop_round_keys}
+        round_values = {
+            "round_flops": 0.0,
+            "round_flops_compression": 0.0,
+        }
         values_found = False
 
         for _, fit_res in fit_results:
             metrics = getattr(fit_res, "metrics", None) or {}
-            for key in flop_round_keys:
-                value = metrics.get(key)
-                if isinstance(value, Number):
-                    round_values[key] += float(value)
-                    values_found = True
+            round_flops = metrics.get("round_flops")
+            if isinstance(round_flops, Number):
+                round_values["round_flops"] += float(round_flops)
+                values_found = True
+
+            round_flops_compression = 0.0
+            compression_value = metrics.get("round_flops_compression")
+            if isinstance(compression_value, Number):
+                round_flops_compression += float(compression_value)
+                values_found = True
+
+            decompression_value = metrics.get("round_flops_decompression")
+            if isinstance(decompression_value, Number):
+                round_flops_compression += float(decompression_value)
+                values_found = True
+
+            round_values["round_flops_compression"] += round_flops_compression
 
         if not values_found:
             if not self._missing_flop_metrics_warned:
@@ -329,12 +322,15 @@ class WandbServer(Server):
                     (
                         "No client FLOP metrics were provided; reporting zero "
                         "values in WandB. Ensure clients populate 'round_flops', "
-                        "'round_flops_compression', and 'round_flops_decompression'"
+                        "'round_flops_compression' (compression/decompression path)"
                     ),
                 )
                 self._missing_flop_metrics_warned = True
 
-            zero_metrics: dict[str, float] = {key: 0.0 for key in flop_round_keys}
+            zero_metrics: dict[str, float] = {
+                "round_flops": 0.0,
+                "round_flops_compression": 0.0,
+            }
             zero_metrics.update(self._flop_totals)
             fit_metrics.update(zero_metrics)
             return
@@ -348,13 +344,13 @@ class WandbServer(Server):
         self._flop_totals["total_flops_compression"] += round_values[
             "round_flops_compression"
         ]
-        self._flop_totals["total_flops_decompression"] += round_values[
-            "round_flops_decompression"
-        ]
-        self._flop_totals["total_flops_including_compression"] += (
-            round_values["round_flops"]
-            + round_values["round_flops_compression"]
-            + round_values["round_flops_decompression"]
-        )
+        self._flop_totals["total_flops"] += round_values["round_flops_compression"]
 
-        fit_metrics.update(self._flop_totals)
+        fit_metrics.pop("round_flops_decompression", None)
+        fit_metrics.pop("total_flops_decompression", None)
+        fit_metrics.pop("total_flops_including_compression", None)
+
+        fit_metrics["total_flops"] = self._flop_totals["total_flops"]
+        fit_metrics["total_flops_compression"] = self._flop_totals[
+            "total_flops_compression"
+        ]

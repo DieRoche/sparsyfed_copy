@@ -62,6 +62,7 @@ class WandbServer(Server):
         self._flop_totals: dict[str, float] = {
             "total_flops": 0.0,
             "total_flops_compression": 0.0,
+            "total_serialization_flops": 0.0,
         }
         self._flop_metrics_available = False
         self._missing_flop_metrics_warned = False
@@ -231,6 +232,11 @@ class WandbServer(Server):
                 fallback_metrics.update(
                     {
                         "round_flops": 0.0,
+                        "compression_flops_clients": 0.0,
+                        "compression_flops_server": 0.0,
+                        "decompression_flops_clients": 0.0,
+                        "decompression_flops_server": 0.0,
+                        "serialization_flops": 0.0,
                         "round_flops_compression": 0.0,
                         "total_flops": self._flop_totals["total_flops"],
                         "total_flops_compression": self._flop_totals[
@@ -291,6 +297,11 @@ class WandbServer(Server):
 
         round_values = {
             "round_flops": 0.0,
+            "compression_flops_clients": 0.0,
+            "compression_flops_server": 0.0,
+            "decompression_flops_clients": 0.0,
+            "decompression_flops_server": 0.0,
+            "serialization_flops": 0.0,
             "round_flops_compression": 0.0,
         }
         values_found = False
@@ -298,22 +309,99 @@ class WandbServer(Server):
         for _, fit_res in fit_results:
             metrics = getattr(fit_res, "metrics", None) or {}
             round_flops = metrics.get("round_flops")
-            if isinstance(round_flops, Number):
-                round_values["round_flops"] += float(round_flops)
-                values_found = True
+            serialization_flops = metrics.get("serialization_flops")
+            compression_flops_clients = metrics.get("compression_flops_clients")
+            compression_flops_server = metrics.get("compression_flops_server")
+            decompression_flops_clients = metrics.get("decompression_flops_clients")
+            decompression_flops_server = metrics.get("decompression_flops_server")
+            legacy_compression = metrics.get("round_flops_compression")
+            legacy_decompression = metrics.get("round_flops_decompression")
 
-            round_flops_compression = 0.0
-            compression_value = metrics.get("round_flops_compression")
-            if isinstance(compression_value, Number):
-                round_flops_compression += float(compression_value)
-                values_found = True
+            per_client_training_flops = (
+                float(round_flops) if isinstance(round_flops, Number) else 0.0
+            )
+            per_client_serialization_flops = (
+                float(serialization_flops)
+                if isinstance(serialization_flops, Number)
+                else 0.0
+            )
+            per_client_compression_flops_clients = (
+                float(compression_flops_clients)
+                if isinstance(compression_flops_clients, Number)
+                else 0.0
+            )
+            per_client_compression_flops_server = (
+                float(compression_flops_server)
+                if isinstance(compression_flops_server, Number)
+                else 0.0
+            )
+            per_client_decompression_flops_clients = (
+                float(decompression_flops_clients)
+                if isinstance(decompression_flops_clients, Number)
+                else 0.0
+            )
+            per_client_decompression_flops_server = (
+                float(decompression_flops_server)
+                if isinstance(decompression_flops_server, Number)
+                else 0.0
+            )
 
-            decompression_value = metrics.get("round_flops_decompression")
-            if isinstance(decompression_value, Number):
-                round_flops_compression += float(decompression_value)
-                values_found = True
+            if (
+                per_client_compression_flops_clients == 0.0
+                and isinstance(legacy_compression, Number)
+            ):
+                per_client_compression_flops_clients = float(legacy_compression)
 
-            round_values["round_flops_compression"] += round_flops_compression
+            if (
+                per_client_decompression_flops_clients == 0.0
+                and isinstance(legacy_decompression, Number)
+            ):
+                per_client_decompression_flops_clients = float(legacy_decompression)
+
+            # If serialization FLOPs are reported separately and already included in
+            # round_flops, move them to compression accounting to avoid double counting.
+            if per_client_serialization_flops > 0.0:
+                per_client_training_flops = max(
+                    per_client_training_flops - per_client_serialization_flops,
+                    0.0,
+                )
+
+            per_client_round_compression = (
+                per_client_compression_flops_clients
+                + per_client_compression_flops_server
+                + per_client_decompression_flops_clients
+                + per_client_decompression_flops_server
+                + per_client_serialization_flops
+            )
+
+            round_values["round_flops"] += per_client_training_flops
+            round_values["compression_flops_clients"] += (
+                per_client_compression_flops_clients
+            )
+            round_values["compression_flops_server"] += (
+                per_client_compression_flops_server
+            )
+            round_values["decompression_flops_clients"] += (
+                per_client_decompression_flops_clients
+            )
+            round_values["decompression_flops_server"] += (
+                per_client_decompression_flops_server
+            )
+            round_values["serialization_flops"] += per_client_serialization_flops
+            round_values["round_flops_compression"] += per_client_round_compression
+
+            values_found = values_found or any(
+                value > 0.0
+                for value in (
+                    per_client_training_flops,
+                    per_client_compression_flops_clients,
+                    per_client_compression_flops_server,
+                    per_client_decompression_flops_clients,
+                    per_client_decompression_flops_server,
+                    per_client_serialization_flops,
+                    per_client_round_compression,
+                )
+            )
 
         if not values_found:
             if not self._missing_flop_metrics_warned:
@@ -322,13 +410,19 @@ class WandbServer(Server):
                     (
                         "No client FLOP metrics were provided; reporting zero "
                         "values in WandB. Ensure clients populate 'round_flops', "
-                        "'round_flops_compression' (compression/decompression path)"
+                        "compression/decompression split metrics, and "
+                        "'serialization_flops' if available."
                     ),
                 )
                 self._missing_flop_metrics_warned = True
 
             zero_metrics: dict[str, float] = {
                 "round_flops": 0.0,
+                "compression_flops_clients": 0.0,
+                "compression_flops_server": 0.0,
+                "decompression_flops_clients": 0.0,
+                "decompression_flops_server": 0.0,
+                "serialization_flops": 0.0,
                 "round_flops_compression": 0.0,
             }
             zero_metrics.update(self._flop_totals)
@@ -344,6 +438,9 @@ class WandbServer(Server):
         self._flop_totals["total_flops_compression"] += round_values[
             "round_flops_compression"
         ]
+        self._flop_totals["total_serialization_flops"] += round_values[
+            "serialization_flops"
+        ]
         self._flop_totals["total_flops"] += round_values["round_flops_compression"]
 
         fit_metrics.pop("round_flops_decompression", None)
@@ -353,4 +450,7 @@ class WandbServer(Server):
         fit_metrics["total_flops"] = self._flop_totals["total_flops"]
         fit_metrics["total_flops_compression"] = self._flop_totals[
             "total_flops_compression"
+        ]
+        fit_metrics["total_serialization_flops"] = self._flop_totals[
+            "total_serialization_flops"
         ]

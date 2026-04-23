@@ -325,9 +325,13 @@ class WandbServer(Server):
                 if isinstance(serialization_flops, Number)
                 else 0.0
             )
+            has_split_compression_clients = isinstance(
+                compression_flops_clients,
+                Number,
+            )
             per_client_compression_flops_clients = (
                 float(compression_flops_clients)
-                if isinstance(compression_flops_clients, Number)
+                if has_split_compression_clients
                 else 0.0
             )
             per_client_compression_flops_server = (
@@ -335,9 +339,13 @@ class WandbServer(Server):
                 if isinstance(compression_flops_server, Number)
                 else 0.0
             )
+            has_split_decompression_clients = isinstance(
+                decompression_flops_clients,
+                Number,
+            )
             per_client_decompression_flops_clients = (
                 float(decompression_flops_clients)
-                if isinstance(decompression_flops_clients, Number)
+                if has_split_decompression_clients
                 else 0.0
             )
             per_client_decompression_flops_server = (
@@ -347,13 +355,13 @@ class WandbServer(Server):
             )
 
             if (
-                per_client_compression_flops_clients == 0.0
+                not has_split_compression_clients
                 and isinstance(legacy_compression, Number)
             ):
                 per_client_compression_flops_clients = float(legacy_compression)
 
             if (
-                per_client_decompression_flops_clients == 0.0
+                not has_split_decompression_clients
                 and isinstance(legacy_decompression, Number)
             ):
                 per_client_decompression_flops_clients = float(legacy_decompression)

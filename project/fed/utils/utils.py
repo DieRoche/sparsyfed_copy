@@ -33,6 +33,11 @@ DEFAULT_SUM_METRICS = frozenset(
         "nonzero_communication_total",
         "round_flops",
         "round_flops_compression",
+        "compression_flops_clients",
+        "compression_flops_server",
+        "decompression_flops_clients",
+        "decompression_flops_server",
+        "serialization_flops",
     }
 )
 

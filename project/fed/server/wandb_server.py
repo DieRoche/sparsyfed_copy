@@ -310,6 +310,29 @@ class WandbServer(Server):
             "serialization_flops": 0.0,
             "round_flops_compression": 0.0,
         }
+
+        def _metric_as_float(key: str) -> float:
+            value = fit_metrics.get(key)
+            return float(value) if isinstance(value, Number) else 0.0
+
+        existing_values = {
+            "round_flops": _metric_as_float("round_flops"),
+            "training_flops": _metric_as_float("training_flops"),
+            "aggregation_flops": _metric_as_float("aggregation_flops"),
+            "evaluation_flops": _metric_as_float("evaluation_flops"),
+            "compression_flops_clients": _metric_as_float(
+                "compression_flops_clients"
+            ),
+            "compression_flops_server": _metric_as_float("compression_flops_server"),
+            "decompression_flops_clients": _metric_as_float(
+                "decompression_flops_clients"
+            ),
+            "decompression_flops_server": _metric_as_float(
+                "decompression_flops_server"
+            ),
+            "serialization_flops": _metric_as_float("serialization_flops"),
+            "round_flops_compression": _metric_as_float("round_flops_compression"),
+        }
         values_found = False
 
         for _, fit_res in fit_results:
@@ -432,7 +455,7 @@ class WandbServer(Server):
                 )
             )
 
-        if not values_found:
+        if not values_found and existing_values["round_flops"] <= 0.0:
             if not self._missing_flop_metrics_warned:
                 log(
                     INFO,
@@ -464,16 +487,36 @@ class WandbServer(Server):
         self._flop_metrics_available = True
         self._missing_flop_metrics_warned = False
 
-        fit_metrics.update(round_values)
+        merged_values = round_values.copy()
+        for key, existing_value in existing_values.items():
+            if merged_values[key] <= 0.0 and existing_value > 0.0:
+                merged_values[key] = existing_value
 
-        self._flop_totals["total_flops"] += round_values["round_flops"]
-        self._flop_totals["total_flops_compression"] += round_values[
+        merged_values["round_flops"] = max(
+            merged_values["training_flops"]
+            + merged_values["aggregation_flops"]
+            + merged_values["evaluation_flops"],
+            merged_values["round_flops"],
+        )
+        merged_values["round_flops_compression"] = max(
+            merged_values["compression_flops_clients"]
+            + merged_values["compression_flops_server"]
+            + merged_values["decompression_flops_clients"]
+            + merged_values["decompression_flops_server"]
+            + merged_values["serialization_flops"],
+            merged_values["round_flops_compression"],
+        )
+
+        fit_metrics.update(merged_values)
+
+        self._flop_totals["total_flops"] += merged_values["round_flops"]
+        self._flop_totals["total_flops_compression"] += merged_values[
             "round_flops_compression"
         ]
-        self._flop_totals["total_serialization_flops"] += round_values[
+        self._flop_totals["total_serialization_flops"] += merged_values[
             "serialization_flops"
         ]
-        self._flop_totals["total_flops"] += round_values["round_flops_compression"]
+        self._flop_totals["total_flops"] += merged_values["round_flops_compression"]
 
         fit_metrics.pop("round_flops_decompression", None)
         fit_metrics.pop("total_flops_decompression", None)

@@ -212,20 +212,40 @@ class Client(fl.client.NumPyClient):
         )
 
     def _infer_parameter_bitwidth(self, parameters: NDArrays) -> int:
-        """Infer a representative parameter bitwidth for serialization FLOPs."""
+        """Infer a representative floating-point bitwidth for serialization FLOPs.
+
+        Preference is given to floating-point tensors and weighted by tensor
+        size (number of elements) to avoid bias from small integer buffers such
+        as BatchNorm counters.
+        """
 
         if not parameters:
             return 0
 
-        max_itemsize = 0
+        floating_bitwidth_hist: dict[int, int] = {}
+        all_bitwidth_hist: dict[int, int] = {}
         for parameter in parameters:
             if isinstance(parameter, np.ndarray):
-                max_itemsize = max(max_itemsize, int(parameter.dtype.itemsize))
+                bitwidth = int(parameter.dtype.itemsize) * 8
+                if bitwidth <= 0:
+                    continue
 
-        if max_itemsize <= 0:
+                numel = int(parameter.size)
+                all_bitwidth_hist[bitwidth] = (
+                    all_bitwidth_hist.get(bitwidth, 0) + numel
+                )
+                if np.issubdtype(parameter.dtype, np.floating):
+                    floating_bitwidth_hist[bitwidth] = (
+                        floating_bitwidth_hist.get(bitwidth, 0) + numel
+                    )
+
+        source_hist = (
+            floating_bitwidth_hist if floating_bitwidth_hist else all_bitwidth_hist
+        )
+        if not source_hist:
             return 0
 
-        return max_itemsize * 8
+        return max(source_hist, key=source_hist.get)
 
     def __init__(
         self,

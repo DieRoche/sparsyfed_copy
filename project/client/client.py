@@ -65,6 +65,12 @@ class Client(fl.client.NumPyClient):
     _BACKWARD_MULTIPLIER = 2.0
     _OPTIMIZER_COST = 2.0
     _FLOP_SAMPLE_SHAPE = (128, 3, 32, 32)
+    _SPARSE_SCAN_COST = 1.0
+    _SPARSE_INDEX_WRITE_COST = 1.0
+    _QUANTIZE_COST = 4.0
+    _DEQUANTIZE_COST = 2.0
+    _SPARSE_RECONSTRUCTION_COST = 1.0
+    _SERIALIZATION_FLOPS_PER_BIT = 1.0
 
     def _get_dense_forward_flops(
         self,
@@ -157,6 +163,69 @@ class Client(fl.client.NumPyClient):
         )
 
         return float(epochs * steps_per_epoch * per_step_flops)
+
+    def _estimate_communication_flops(
+        self,
+        server_nonzero_count: int,
+        client_nonzero_count: int,
+        total_param_count: int,
+        bits_per_parameter: int,
+    ) -> tuple[float, float, float]:
+        """Estimate client-side compression/decompression FLOPs.
+
+        Even when Flower transport is dense, clients still execute sparse
+        bookkeeping operations (scan active entries, build sparse index/value
+        views, and reconstruct parameters). This method tracks that workload as
+        communication-related FLOPs so it is not lost in round-level metrics.
+        """
+
+        if (
+            total_param_count <= 0
+            or server_nonzero_count < 0
+            or client_nonzero_count < 0
+            or bits_per_parameter <= 0
+        ):
+            return 0.0, 0.0, 0.0
+
+        compression_scan_flops = self._SPARSE_SCAN_COST * float(total_param_count)
+        compression_sparse_create_flops = (
+            self._SPARSE_INDEX_WRITE_COST + self._QUANTIZE_COST
+        ) * float(client_nonzero_count)
+        compression_flops_clients = (
+            compression_scan_flops + compression_sparse_create_flops
+        )
+
+        decompression_flops_clients = (
+            self._DEQUANTIZE_COST + self._SPARSE_RECONSTRUCTION_COST
+        ) * float(server_nonzero_count)
+
+        serialization_flops = (
+            self._SERIALIZATION_FLOPS_PER_BIT
+            * float(bits_per_parameter)
+            * float(total_param_count * 2)
+        )
+
+        return (
+            float(compression_flops_clients),
+            float(decompression_flops_clients),
+            float(serialization_flops),
+        )
+
+    def _infer_parameter_bitwidth(self, parameters: NDArrays) -> int:
+        """Infer a representative parameter bitwidth for serialization FLOPs."""
+
+        if not parameters:
+            return 0
+
+        max_itemsize = 0
+        for parameter in parameters:
+            if isinstance(parameter, np.ndarray):
+                max_itemsize = max(max_itemsize, int(parameter.dtype.itemsize))
+
+        if max_itemsize <= 0:
+            return 0
+
+        return max_itemsize * 8
 
     def __init__(
         self,
@@ -261,6 +330,7 @@ class Client(fl.client.NumPyClient):
             client_nonzero_count, client_total_count = count_nonzero_elements(
                 updated_parameters
             )
+            bits_per_parameter = self._infer_parameter_bitwidth(updated_parameters)
 
             try:
                 num_batches = len(trainloader)
@@ -314,7 +384,27 @@ class Client(fl.client.NumPyClient):
                 server_nonzero_count + client_nonzero_count
             )
             metrics["round_flops"] = round_flops
-            metrics.setdefault("round_flops_compression", 0.0)
+            (
+                compression_flops_clients,
+                decompression_flops_clients,
+                serialization_flops,
+            ) = self._estimate_communication_flops(
+                server_nonzero_count,
+                client_nonzero_count,
+                server_total_count,
+                bits_per_parameter,
+            )
+            metrics["compression_flops_clients"] = compression_flops_clients
+            metrics["compression_flops_server"] = 0.0
+            metrics["decompression_flops_clients"] = decompression_flops_clients
+            metrics["decompression_flops_server"] = 0.0
+            metrics["serialization_flops"] = serialization_flops
+            metrics["round_flops_compression"] = (
+                compression_flops_clients
+                + decompression_flops_clients
+                + serialization_flops
+            )
+            metrics["round_flops_decompression"] = decompression_flops_clients
 
             updates_dir_raw = config.extra.get("client_updates_dir")
             if updates_dir_raw:

@@ -63,12 +63,18 @@ class MaskManager:
                 np.savez_compressed(filepath, *masks)
 
     def load_masks(
-        self, sparsity: float, use_pickle: bool = True
+        self,
+        sparsity: float,
+        use_pickle: bool = True,
+        allow_npz_pickle: bool = False,
     ) -> list[np.ndarray] | None:
         """Load masks for a specific sparsity level.
 
         Tries the requested format first and then falls back to the other format
         to support existing runs that may have mixed mask serialization settings.
+
+        For security, NPZ loading keeps NumPy's safe default (no pickle object
+        loading). Set `allow_npz_pickle=True` only for trusted mask artifacts.
         """
         pkl_path = self.working_dir / f"masks_{sparsity:.2f}.pkl"
         npz_path = self.working_dir / f"masks_{sparsity:.2f}.npz"
@@ -81,7 +87,7 @@ class MaskManager:
 
         def _load_npz() -> list[np.ndarray] | None:
             if npz_path.exists():
-                npz_file = np.load(npz_path, allow_pickle=True)
+                npz_file = np.load(npz_path, allow_pickle=allow_npz_pickle)
                 return [npz_file[f"arr_{i}"] for i in range(len(npz_file.files))]
             return None
 

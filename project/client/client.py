@@ -36,10 +36,9 @@ from project.fed.utils.utils import (
     get_nonzeros,
 )
 from project.fed.transport.sparse_codec import (
-    decode_parameters,
+    decode_or_deserialize_parameters,
     encode_parameters,
     estimate_encoded_size,
-    is_sparse_transport,
 )
 
 from project.types.common import (
@@ -636,11 +635,7 @@ class FlowerClient(fl.client.Client):
     def fit(self, ins: FitIns) -> FL_FitRes:
         cfg = dict(ins.config)
         sparse_cfg = dict(cfg.get("extra", {}).get("sparse_transport", {}))
-        parameters = (
-            decode_parameters(ins.parameters)
-            if is_sparse_transport(ins.parameters)
-            else parameters_to_ndarrays(ins.parameters)
-        )
+        parameters = decode_or_deserialize_parameters(ins.parameters)
         updated, num_samples, metrics = self.numpy_client.fit(parameters, cfg)
         if sparse_cfg.get("enabled", False):
             sparse_cfg["task_sparsity"] = cfg.get("extra", {}).get("task_sparsity", 0.0)
@@ -663,11 +658,7 @@ class FlowerClient(fl.client.Client):
         )
 
     def evaluate(self, ins: EvaluateIns) -> FL_EvaluateRes:
-        parameters = (
-            decode_parameters(ins.parameters)
-            if is_sparse_transport(ins.parameters)
-            else parameters_to_ndarrays(ins.parameters)
-        )
+        parameters = decode_or_deserialize_parameters(ins.parameters)
         loss, num_examples, metrics = self.numpy_client.evaluate(parameters, dict(ins.config))
         return FL_EvaluateRes(
             status=Status(code=Code.OK, message="Success"),

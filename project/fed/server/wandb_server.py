@@ -486,15 +486,20 @@ class WandbServer(Server):
                 )
             )
 
-        if not values_found and existing_values["round_flops"] <= 0.0:
+        if (
+            not values_found
+            and existing_values["round_flops"] <= 0.0
+            and server_aggregation_flops <= 0.0
+        ):
             if not self._missing_flop_metrics_warned:
                 log(
                     INFO,
                     (
-                        "No client FLOP metrics were provided; reporting zero "
-                        "values in WandB. Ensure clients populate 'round_flops', "
-                        "compression/decompression split metrics, and "
-                        "'serialization_flops' if available."
+                        "No client FLOP metrics were provided and server "
+                        "aggregation FLOPs could not be estimated; reporting "
+                        "zero values in WandB. Ensure clients populate "
+                        "'round_flops', compression/decompression split "
+                        "metrics, and 'serialization_flops' if available."
                     ),
                 )
                 self._missing_flop_metrics_warned = True

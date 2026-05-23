@@ -295,7 +295,7 @@ class WandbServer(Server):
         """Use strategy-provided upload traffic when available, else fallback."""
 
         strategy_value = fit_metrics.get("upload_traffic")
-        if isinstance(strategy_value, Number):
+        if isinstance(strategy_value, Number) and not isinstance(strategy_value, bool):
             return float(strategy_value)
         return self._compute_upload_traffic_for_round(fit_results)
 
@@ -308,7 +308,7 @@ class WandbServer(Server):
         """Use strategy-provided download traffic when available, else fallback."""
 
         strategy_value = fit_metrics.get("download_traffic")
-        if isinstance(strategy_value, Number):
+        if isinstance(strategy_value, Number) and not isinstance(strategy_value, bool):
             return float(strategy_value)
         return self._compute_download_traffic_for_round(
             server_payload=server_payload,

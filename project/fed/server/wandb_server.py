@@ -5,7 +5,7 @@ from collections.abc import Callable
 from logging import INFO
 from numbers import Number
 
-from flwr.common import FitRes, Parameters
+from flwr.common import FitRes, Parameters, parameters_to_ndarrays
 from flwr.common.logger import log
 from flwr.server import Server
 from flwr.server.client_manager import ClientManager
@@ -283,6 +283,32 @@ class WandbServer(Server):
             return 0.0
         return float(active_clients * parameters_size_bytes(server_payload))
 
+    def _estimate_server_aggregation_flops(
+        self,
+        fit_results: list[tuple[ClientProxy, FitRes]],
+    ) -> float:
+        """Estimate server-side weighted aggregation FLOPs for one round.
+
+        The estimate assumes weighted averaging over all model parameters with:
+        - one multiply and one add per client parameter value,
+        - one divide per parameter value for final normalization.
+        """
+
+        if not fit_results:
+            return 0.0
+
+        first_parameters = fit_results[0][1].parameters
+        num_parameter_values = sum(
+            int(param.size)
+            for param in parameters_to_ndarrays(first_parameters)
+        )
+        if num_parameter_values <= 0:
+            return 0.0
+
+        num_clients = len(fit_results)
+        flops_per_value = (2 * num_clients) + 1
+        return float(num_parameter_values * flops_per_value)
+
     def _update_flop_metrics(
         self,
         fit_results: list[tuple[ClientProxy, FitRes]],
@@ -298,10 +324,12 @@ class WandbServer(Server):
             The aggregated metrics dictionary for the round.
         """
 
+        server_aggregation_flops = self._estimate_server_aggregation_flops(fit_results)
+
         round_values = {
             "round_flops": 0.0,
             "training_flops": 0.0,
-            "aggregation_flops": 0.0,
+            "aggregation_flops": server_aggregation_flops,
             "evaluation_flops": 0.0,
             "compression_flops_clients": 0.0,
             "compression_flops_server": 0.0,
@@ -318,7 +346,10 @@ class WandbServer(Server):
         existing_values = {
             "round_flops": _metric_as_float("round_flops"),
             "training_flops": _metric_as_float("training_flops"),
-            "aggregation_flops": _metric_as_float("aggregation_flops"),
+            "aggregation_flops": max(
+                _metric_as_float("aggregation_flops"),
+                server_aggregation_flops,
+            ),
             "evaluation_flops": _metric_as_float("evaluation_flops"),
             "compression_flops_clients": _metric_as_float(
                 "compression_flops_clients"

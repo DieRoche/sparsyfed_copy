@@ -86,9 +86,15 @@ class MaskManager:
             return None
 
         if use_pickle:
-            return _load_pickle() or _load_npz()
+            masks = _load_pickle()
+            if masks is not None:
+                return masks
+            return _load_npz()
 
-        return _load_npz() or _load_pickle()
+        masks = _load_npz()
+        if masks is not None:
+            return masks
+        return _load_pickle()
 
     def apply_masks(
         self, parameters: list[np.ndarray], sparsity: float

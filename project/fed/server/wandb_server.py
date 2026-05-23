@@ -144,14 +144,18 @@ class WandbServer(Server):
                 fit_results, failures = fit_results_and_failures
 
                 active_clients = int(len(fit_results) + len(failures))
-                upload_traffic = self._compute_upload_traffic_for_round(fit_results)
-                download_traffic = self._compute_download_traffic_for_round(
+                if fit_metrics is None:
+                    fit_metrics = {}
+
+                upload_traffic = self._resolve_upload_traffic_for_round(
+                    fit_metrics=fit_metrics,
+                    fit_results=fit_results,
+                )
+                download_traffic = self._resolve_download_traffic_for_round(
+                    fit_metrics=fit_metrics,
                     server_payload=self.parameters,
                     active_clients=active_clients,
                 )
-
-                if fit_metrics is None:
-                    fit_metrics = {}
 
                 fit_metrics.update({
                     "upload_traffic": float(upload_traffic),
@@ -282,6 +286,34 @@ class WandbServer(Server):
         if active_clients <= 0:
             return 0.0
         return float(active_clients * parameters_size_bytes(server_payload))
+
+    def _resolve_upload_traffic_for_round(
+        self,
+        fit_metrics: dict[str, float | int | bool | str],
+        fit_results: list[tuple[ClientProxy, FitRes]],
+    ) -> float:
+        """Use strategy-provided upload traffic when available, else fallback."""
+
+        strategy_value = fit_metrics.get("upload_traffic")
+        if isinstance(strategy_value, Number) and not isinstance(strategy_value, bool):
+            return float(strategy_value)
+        return self._compute_upload_traffic_for_round(fit_results)
+
+    def _resolve_download_traffic_for_round(
+        self,
+        fit_metrics: dict[str, float | int | bool | str],
+        server_payload: Parameters | None,
+        active_clients: int,
+    ) -> float:
+        """Use strategy-provided download traffic when available, else fallback."""
+
+        strategy_value = fit_metrics.get("download_traffic")
+        if isinstance(strategy_value, Number) and not isinstance(strategy_value, bool):
+            return float(strategy_value)
+        return self._compute_download_traffic_for_round(
+            server_payload=server_payload,
+            active_clients=active_clients,
+        )
 
     def _estimate_server_aggregation_flops(
         self,

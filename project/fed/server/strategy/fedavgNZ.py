@@ -274,12 +274,12 @@ class FedAvgNZ(Strategy):
         sparse_cfg = dict(self.sparse_transport_config)
         sparse_enabled = bool(sparse_cfg.get("enabled", False))
         cfg_extra = config.setdefault("extra", {})
-        cfg_extra["task_sparsity"] = self.task_sparsity
-        cfg_extra["sparse_transport"] = sparse_cfg
         send_parameters = parameters
         dense_ndarrays = parameters_to_ndarrays(parameters)
         self._last_downlink_dense_bytes_one_client = int(sum(arr.nbytes for arr in dense_ndarrays))
         if sparse_enabled:
+            cfg_extra["task_sparsity"] = self.task_sparsity
+            cfg_extra["sparse_transport"] = sparse_cfg
             sparse_cfg["task_sparsity"] = self.task_sparsity
             send_parameters = encode_parameters(dense_ndarrays, sparse_cfg)
             self._last_downlink_transport_bytes_one_client = int(sum(len(t) for t in send_parameters.tensors))

@@ -10,7 +10,19 @@ from pathlib import Path
 
 import flwr as fl
 import numpy as np
-from flwr.common import NDArrays
+from flwr.common import (
+    Code,
+    EvaluateIns,
+    EvaluateRes as FL_EvaluateRes,
+    FitIns,
+    FitRes as FL_FitRes,
+    GetParametersIns,
+    GetParametersRes,
+    NDArrays,
+    Status,
+    ndarrays_to_parameters,
+    parameters_to_ndarrays,
+)
 from pydantic import BaseModel
 import torch
 from torch import nn
@@ -21,6 +33,12 @@ from project.fed.utils.utils import (
     generic_get_parameters,
     generic_set_parameters,
     get_nonzeros,
+)
+from project.fed.transport.sparse_codec import (
+    decode_parameters,
+    encode_parameters,
+    estimate_encoded_size,
+    is_sparse_transport,
 )
 
 from project.types.common import (
@@ -603,6 +621,61 @@ class Client(fl.client.NumPyClient):
         return {}
 
 
+class FlowerClient(fl.client.Client):
+    def __init__(self, numpy_client: Client) -> None:
+        self.numpy_client = numpy_client
+
+    def get_parameters(self, ins: GetParametersIns) -> GetParametersRes:
+        ndarrays = self.numpy_client.get_parameters(ins.config)
+        return GetParametersRes(
+            status=Status(code=Code.OK, message="Success"),
+            parameters=ndarrays_to_parameters(ndarrays),
+        )
+
+    def fit(self, ins: FitIns) -> FL_FitRes:
+        cfg = dict(ins.config)
+        sparse_cfg = dict(cfg.get("extra", {}).get("sparse_transport", {}))
+        parameters = (
+            decode_parameters(ins.parameters)
+            if is_sparse_transport(ins.parameters)
+            else parameters_to_ndarrays(ins.parameters)
+        )
+        updated, num_samples, metrics = self.numpy_client.fit(parameters, cfg)
+        if sparse_cfg.get("enabled", False):
+            sparse_cfg["task_sparsity"] = cfg.get("extra", {}).get("task_sparsity", 0.0)
+            encoded = encode_parameters(updated, sparse_cfg)
+            size_info = estimate_encoded_size(updated, sparse_cfg)
+            metrics["upload_transport_bytes"] = float(size_info["transport_bytes"])
+            metrics["upload_dense_bytes"] = float(size_info["dense_bytes"])
+            metrics["upload_nnz"] = float(sum(np.count_nonzero(arr) for arr in updated))
+            metrics["upload_total_params"] = float(sum(arr.size for arr in updated))
+            metrics["upload_encoding_csr_layers"] = float(size_info["encoding_counts"]["csr"])
+            metrics["upload_encoding_bitmap_layers"] = float(size_info["encoding_counts"]["bitmap_values"])
+            metrics["upload_encoding_dense_layers"] = float(size_info["encoding_counts"]["dense"])
+        else:
+            encoded = ndarrays_to_parameters(updated)
+        return FL_FitRes(
+            status=Status(code=Code.OK, message="Success"),
+            parameters=encoded,
+            num_examples=num_samples,
+            metrics=metrics,
+        )
+
+    def evaluate(self, ins: EvaluateIns) -> FL_EvaluateRes:
+        parameters = (
+            decode_parameters(ins.parameters)
+            if is_sparse_transport(ins.parameters)
+            else parameters_to_ndarrays(ins.parameters)
+        )
+        loss, num_examples, metrics = self.numpy_client.evaluate(parameters, dict(ins.config))
+        return FL_EvaluateRes(
+            status=Status(code=Code.OK, message="Success"),
+            loss=float(loss),
+            num_examples=num_examples,
+            metrics=metrics,
+        )
+
+
 def get_client_generator(
     working_dir: Path,
     net_generator: NetGen,
@@ -641,7 +714,7 @@ def get_client_generator(
         The function which creates a new Client.
     """
 
-    def client_generator(cid: int | str) -> Client:
+    def client_generator(cid: int | str) -> fl.client.Client:
         """Return a new Client.
 
         Parameters
@@ -654,7 +727,7 @@ def get_client_generator(
         Client
             The new Client.
         """
-        return Client(
+        numpy_client = Client(
             cid,
             working_dir,
             net_generator,
@@ -663,5 +736,6 @@ def get_client_generator(
             test,
             fed_dataloader_gen,
         )
+        return FlowerClient(numpy_client)
 
     return client_generator

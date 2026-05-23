@@ -45,6 +45,12 @@ from flwr.server.strategy.strategy import Strategy
 from functools import reduce
 
 import numpy as np
+from project.fed.transport.sparse_codec import (
+    decode_parameters,
+    encode_parameters,
+    estimate_encoded_size,
+    is_sparse_transport,
+)
 
 WARNING_MIN_AVAILABLE_CLIENTS_TOO_LOW = """
 Setting `min_available_clients` lower than `min_fit_clients` or
@@ -181,6 +187,8 @@ class FedAvgNZ(Strategy):
         fit_metrics_aggregation_fn: Optional[MetricsAggregationFn] = None,
         evaluate_metrics_aggregation_fn: Optional[MetricsAggregationFn] = None,
         working_dir: Path,
+        sparse_transport_config: Optional[dict] = None,
+        task_sparsity: float = 0.0,
     ) -> None:
         super().__init__()
 
@@ -203,6 +211,11 @@ class FedAvgNZ(Strategy):
         self.fit_metrics_aggregation_fn = fit_metrics_aggregation_fn
         self.evaluate_metrics_aggregation_fn = evaluate_metrics_aggregation_fn
         self.working_dir = working_dir
+        self.sparse_transport_config = dict(sparse_transport_config or {})
+        self.task_sparsity = float(task_sparsity)
+        self._last_downlink_dense_bytes_one_client = 0
+        self._last_downlink_transport_bytes_one_client = 0
+        self._last_downlink_num_clients = 0
 
     def __repr__(self) -> str:
         """Compute a string representation of the strategy."""
@@ -234,7 +247,9 @@ class FedAvgNZ(Strategy):
         if self.evaluate_fn is None:
             # No evaluation function provided
             return None
-        parameters_ndarrays = parameters_to_ndarrays(parameters)
+        parameters_ndarrays = (
+            decode_parameters(parameters) if is_sparse_transport(parameters) else parameters_to_ndarrays(parameters)
+        )
         eval_res = self.evaluate_fn(server_round, parameters_ndarrays, {})
         if eval_res is None:
             return None
@@ -249,8 +264,6 @@ class FedAvgNZ(Strategy):
         if self.on_fit_config_fn is not None:
             # Custom fit config function provided
             config = self.on_fit_config_fn(server_round)
-        fit_ins = FitIns(parameters, config)
-
         # Sample clients
         sample_size, min_num_clients = self.num_fit_clients(
             client_manager.num_available()
@@ -259,7 +272,22 @@ class FedAvgNZ(Strategy):
             num_clients=sample_size, min_num_clients=min_num_clients
         )
 
-        # Return client/config pairs
+        sparse_cfg = dict(self.sparse_transport_config)
+        sparse_enabled = bool(sparse_cfg.get("enabled", False))
+        cfg_extra = config.setdefault("extra", {})
+        cfg_extra["task_sparsity"] = self.task_sparsity
+        cfg_extra["sparse_transport"] = sparse_cfg
+        send_parameters = parameters
+        dense_ndarrays = parameters_to_ndarrays(parameters)
+        self._last_downlink_dense_bytes_one_client = int(sum(arr.nbytes for arr in dense_ndarrays))
+        if sparse_enabled:
+            sparse_cfg["task_sparsity"] = self.task_sparsity
+            send_parameters = encode_parameters(dense_ndarrays, sparse_cfg)
+            self._last_downlink_transport_bytes_one_client = int(sum(len(t) for t in send_parameters.tensors))
+        else:
+            self._last_downlink_transport_bytes_one_client = self._last_downlink_dense_bytes_one_client
+        self._last_downlink_num_clients = len(clients)
+        fit_ins = FitIns(send_parameters, config)
         return [(client, fit_ins) for client in clients]
 
     def configure_evaluate(
@@ -303,7 +331,12 @@ class FedAvgNZ(Strategy):
 
         # Convert results
         weights_results = [
-            (parameters_to_ndarrays(fit_res.parameters), fit_res.num_examples)
+            (
+                decode_parameters(fit_res.parameters)
+                if is_sparse_transport(fit_res.parameters)
+                else parameters_to_ndarrays(fit_res.parameters),
+                fit_res.num_examples,
+            )
             for _, fit_res in results
         ]
         parameters_aggregated = ndarrays_to_parameters(aggregate(weights_results))
@@ -316,6 +349,13 @@ class FedAvgNZ(Strategy):
         elif server_round == 1:  # Only log this warning once
             log(WARNING, "No fit_metrics_aggregation_fn provided")
 
+        upload_traffic = float(sum(res.metrics.get("upload_transport_bytes", 0.0) for _, res in results))
+        download_traffic = float(self._last_downlink_transport_bytes_one_client * self._last_downlink_num_clients)
+        metrics_aggregated["downlink_dense_bytes_one_client"] = float(self._last_downlink_dense_bytes_one_client)
+        metrics_aggregated["downlink_transport_bytes_one_client"] = float(self._last_downlink_transport_bytes_one_client)
+        metrics_aggregated["upload_traffic"] = upload_traffic
+        metrics_aggregated["download_traffic"] = download_traffic
+        metrics_aggregated["overall_traffic"] = upload_traffic + download_traffic
         return parameters_aggregated, metrics_aggregated
 
     def aggregate_evaluate(

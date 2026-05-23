@@ -25,7 +25,7 @@ import wandb
 
 # Only import from the project root
 # Never do a relative import nor one that assumes a given folder structure
-from project.client.client import get_client_generator
+from project.client.client import get_client_generator, get_flower_client_generator
 from project.dispatch.dispatch import dispatch_config, dispatch_data, dispatch_train
 from project.fed.server.deterministic_client_manager import DeterministicClientManager
 from project.fed.server.wandb_history import WandbHistory
@@ -329,7 +329,14 @@ def main(cfg: DictConfig) -> None:
                 )
 
             fl.simulation.start_simulation(
-                client_fn=client_generator,
+                client_fn=get_flower_client_generator(
+                    working_dir=working_dir,
+                    net_generator=net_generator,
+                    dataloader_gen=client_dataloader_gen,
+                    train=train_func,
+                    test=test_func,
+                    fed_dataloader_gen=fed_dataloater_gen,
+                ),
                 num_clients=cfg.fed.num_total_clients,
                 client_resources={
                     "num_cpus": int(

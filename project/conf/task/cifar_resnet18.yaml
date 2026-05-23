@@ -19,6 +19,13 @@ train_structure: CIFAR_RN18_PRUNE
 alpha: 1.25
 sparsity: 0.90
 mask: 0.0
+sparse_transport:
+  enabled: false
+  tensor_type: sparse_transport_v1
+  csr_min_sparsity: 0.85
+  dense_fallback_if_not_smaller: true
+  index_dtype: int32
+  bitorder: little
 
 # Client fit config
 fit_config:

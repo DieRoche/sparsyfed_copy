@@ -6,6 +6,7 @@ from typing import Any
 
 import numpy as np
 from flwr.common import Parameters
+from flwr.common import parameters_to_ndarrays
 
 SCHEMA_VERSION = 1
 HEADER_FMT = "<I"
@@ -167,6 +168,25 @@ def encode_parameters(ndarrays: list[np.ndarray], config: dict[str, Any]) -> Par
 
 def decode_parameters(parameters: Parameters) -> list[np.ndarray]:
     return [_decode_one(tensor) for tensor in parameters.tensors]
+
+
+def decode_or_deserialize_parameters(parameters: Parameters) -> list[np.ndarray]:
+    """Decode sparse transport parameters, with safe fallback for mislabeled payloads.
+
+    Flower deserializes dense payloads via numpy. If a sparse-encoded payload is
+    mislabeled as dense (`tensor_type='numpy.ndarray'`), numpy deserialization can
+    raise `Cannot load file containing pickled data when allow_pickle=False`.
+    In that case, try sparse decode as a compatibility fallback.
+    """
+    if is_sparse_transport(parameters):
+        return decode_parameters(parameters)
+
+    try:
+        return parameters_to_ndarrays(parameters)
+    except ValueError as exc:
+        if "allow_pickle=False" not in str(exc):
+            raise
+        return decode_parameters(parameters)
 
 
 def estimate_encoded_size(ndarrays: list[np.ndarray], config: dict[str, Any]) -> dict[str, Any]:

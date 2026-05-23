@@ -46,9 +46,8 @@ from functools import reduce
 
 import numpy as np
 from project.fed.transport.sparse_codec import (
-    decode_parameters,
+    decode_or_deserialize_parameters,
     encode_parameters,
-    is_sparse_transport,
 )
 
 WARNING_MIN_AVAILABLE_CLIENTS_TOO_LOW = """
@@ -246,9 +245,7 @@ class FedAvgNZ(Strategy):
         if self.evaluate_fn is None:
             # No evaluation function provided
             return None
-        parameters_ndarrays = (
-            decode_parameters(parameters) if is_sparse_transport(parameters) else parameters_to_ndarrays(parameters)
-        )
+        parameters_ndarrays = decode_or_deserialize_parameters(parameters)
         eval_res = self.evaluate_fn(server_round, parameters_ndarrays, {})
         if eval_res is None:
             return None
@@ -331,9 +328,7 @@ class FedAvgNZ(Strategy):
         # Convert results
         weights_results = [
             (
-                decode_parameters(fit_res.parameters)
-                if is_sparse_transport(fit_res.parameters)
-                else parameters_to_ndarrays(fit_res.parameters),
+                decode_or_deserialize_parameters(fit_res.parameters),
                 fit_res.num_examples,
             )
             for _, fit_res in results

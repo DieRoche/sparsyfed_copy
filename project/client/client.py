@@ -6,6 +6,7 @@ Make sure the model and dataset are not loaded before the fit function.
 import json
 import math
 from pathlib import Path
+from collections.abc import Callable
 
 
 import flwr as fl
@@ -714,7 +715,7 @@ def get_client_generator(
         The function which creates a new Client.
     """
 
-    def client_generator(cid: int | str) -> fl.client.Client:
+    def client_generator(cid: int | str) -> Client:
         """Return a new Client.
 
         Parameters
@@ -727,7 +728,7 @@ def get_client_generator(
         Client
             The new Client.
         """
-        numpy_client = Client(
+        return Client(
             cid,
             working_dir,
             net_generator,
@@ -736,6 +737,28 @@ def get_client_generator(
             test,
             fed_dataloader_gen,
         )
-        return FlowerClient(numpy_client)
+
+    return client_generator
+
+
+def get_flower_client_generator(
+    working_dir: Path,
+    net_generator: NetGen,
+    dataloader_gen: ClientDataloaderGen,
+    train: TrainFunc,
+    test: TestFunc,
+    fed_dataloader_gen: FedDataloaderGen,
+) -> Callable[[str], fl.client.Client]:
+    numpy_generator = get_client_generator(
+        working_dir=working_dir,
+        net_generator=net_generator,
+        dataloader_gen=dataloader_gen,
+        train=train,
+        test=test,
+        fed_dataloader_gen=fed_dataloader_gen,
+    )
+
+    def client_generator(cid: str) -> fl.client.Client:
+        return FlowerClient(numpy_generator(cid))
 
     return client_generator

@@ -48,7 +48,6 @@ import numpy as np
 from project.fed.transport.sparse_codec import (
     decode_parameters,
     encode_parameters,
-    estimate_encoded_size,
     is_sparse_transport,
 )
 

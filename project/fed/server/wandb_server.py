@@ -284,15 +284,21 @@ class WandbServer(Server):
             "upload_csr_expected_but_low_sparsity_tensors": 0.0,
             "upload_csr_expected_but_low_sparsity_numel": 0.0,
         }
+        clients_reporting_dense_reference = 0
 
         for _, fit_res in fit_results:
             metrics = getattr(fit_res, "metrics", None) or {}
+            dense_bytes_value = metrics.get("upload_dense_bytes")
+            if isinstance(dense_bytes_value, Number):
+                clients_reporting_dense_reference += 1
             for key in sums:
                 value = metrics.get(key, 0.0)
                 if isinstance(value, Number):
                     sums[key] += float(value)
 
         dense_reference = sums["upload_dense_bytes"]
+        if clients_reporting_dense_reference <= 0:
+            dense_reference = float(upload_traffic)
         total_numel = sums["upload_total_numel"]
         total_nnz = sums["upload_total_nnz"]
 

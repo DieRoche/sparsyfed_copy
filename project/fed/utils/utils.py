@@ -38,6 +38,15 @@ DEFAULT_SUM_METRICS = frozenset(
         "decompression_flops_clients",
         "decompression_flops_server",
         "serialization_flops",
+        "upload_dense_bytes",
+        "upload_payload_bytes",
+        "upload_csr_tensors",
+        "upload_mask_value_tensors",
+        "upload_dense_tensors",
+        "upload_total_nnz",
+        "upload_total_numel",
+        "upload_csr_expected_but_low_sparsity_tensors",
+        "upload_csr_expected_but_low_sparsity_numel",
     }
 )
 
@@ -46,6 +55,8 @@ DEFAULT_AVG_METRICS = frozenset(
         "server_to_client_density",
         "client_to_server_density",
         "learning_rate",
+        "upload_compression_ratio",
+        "upload_actual_sparsity",
     }
 )
 

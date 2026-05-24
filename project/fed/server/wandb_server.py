@@ -5,7 +5,7 @@ from collections.abc import Callable
 from logging import INFO
 from numbers import Number
 
-from flwr.common import FitRes, Parameters
+from flwr.common import FitRes, Parameters, parameters_to_ndarrays
 from flwr.common.logger import log
 from flwr.server import Server
 from flwr.server.client_manager import ClientManager
@@ -144,14 +144,18 @@ class WandbServer(Server):
                 fit_results, failures = fit_results_and_failures
 
                 active_clients = int(len(fit_results) + len(failures))
-                upload_traffic = self._compute_upload_traffic_for_round(fit_results)
-                download_traffic = self._compute_download_traffic_for_round(
+                if fit_metrics is None:
+                    fit_metrics = {}
+
+                upload_traffic = self._resolve_upload_traffic_for_round(
+                    fit_metrics=fit_metrics,
+                    fit_results=fit_results,
+                )
+                download_traffic = self._resolve_download_traffic_for_round(
+                    fit_metrics=fit_metrics,
                     server_payload=self.parameters,
                     active_clients=active_clients,
                 )
-
-                if fit_metrics is None:
-                    fit_metrics = {}
 
                 fit_metrics.update({
                     "upload_traffic": float(upload_traffic),
@@ -283,6 +287,60 @@ class WandbServer(Server):
             return 0.0
         return float(active_clients * parameters_size_bytes(server_payload))
 
+    def _resolve_upload_traffic_for_round(
+        self,
+        fit_metrics: dict[str, float | int | bool | str],
+        fit_results: list[tuple[ClientProxy, FitRes]],
+    ) -> float:
+        """Use strategy-provided upload traffic when available, else fallback."""
+
+        strategy_value = fit_metrics.get("upload_traffic")
+        if isinstance(strategy_value, Number) and not isinstance(strategy_value, bool):
+            return float(strategy_value)
+        return self._compute_upload_traffic_for_round(fit_results)
+
+    def _resolve_download_traffic_for_round(
+        self,
+        fit_metrics: dict[str, float | int | bool | str],
+        server_payload: Parameters | None,
+        active_clients: int,
+    ) -> float:
+        """Use strategy-provided download traffic when available, else fallback."""
+
+        strategy_value = fit_metrics.get("download_traffic")
+        if isinstance(strategy_value, Number) and not isinstance(strategy_value, bool):
+            return float(strategy_value)
+        return self._compute_download_traffic_for_round(
+            server_payload=server_payload,
+            active_clients=active_clients,
+        )
+
+    def _estimate_server_aggregation_flops(
+        self,
+        fit_results: list[tuple[ClientProxy, FitRes]],
+    ) -> float:
+        """Estimate server-side weighted aggregation FLOPs for one round.
+
+        The estimate assumes weighted averaging over all model parameters with:
+        - one multiply and one add per client parameter value,
+        - one divide per parameter value for final normalization.
+        """
+
+        if not fit_results:
+            return 0.0
+
+        first_parameters = fit_results[0][1].parameters
+        num_parameter_values = sum(
+            int(param.size)
+            for param in parameters_to_ndarrays(first_parameters)
+        )
+        if num_parameter_values <= 0:
+            return 0.0
+
+        num_clients = len(fit_results)
+        flops_per_value = (2 * num_clients) + 1
+        return float(num_parameter_values * flops_per_value)
+
     def _update_flop_metrics(
         self,
         fit_results: list[tuple[ClientProxy, FitRes]],
@@ -298,10 +356,12 @@ class WandbServer(Server):
             The aggregated metrics dictionary for the round.
         """
 
+        server_aggregation_flops = self._estimate_server_aggregation_flops(fit_results)
+
         round_values = {
             "round_flops": 0.0,
             "training_flops": 0.0,
-            "aggregation_flops": 0.0,
+            "aggregation_flops": server_aggregation_flops,
             "evaluation_flops": 0.0,
             "compression_flops_clients": 0.0,
             "compression_flops_server": 0.0,
@@ -318,7 +378,10 @@ class WandbServer(Server):
         existing_values = {
             "round_flops": _metric_as_float("round_flops"),
             "training_flops": _metric_as_float("training_flops"),
-            "aggregation_flops": _metric_as_float("aggregation_flops"),
+            "aggregation_flops": max(
+                _metric_as_float("aggregation_flops"),
+                server_aggregation_flops,
+            ),
             "evaluation_flops": _metric_as_float("evaluation_flops"),
             "compression_flops_clients": _metric_as_float(
                 "compression_flops_clients"
@@ -455,15 +518,20 @@ class WandbServer(Server):
                 )
             )
 
-        if not values_found and existing_values["round_flops"] <= 0.0:
+        if (
+            not values_found
+            and existing_values["round_flops"] <= 0.0
+            and server_aggregation_flops <= 0.0
+        ):
             if not self._missing_flop_metrics_warned:
                 log(
                     INFO,
                     (
-                        "No client FLOP metrics were provided; reporting zero "
-                        "values in WandB. Ensure clients populate 'round_flops', "
-                        "compression/decompression split metrics, and "
-                        "'serialization_flops' if available."
+                        "No client FLOP metrics were provided and server "
+                        "aggregation FLOPs could not be estimated; reporting "
+                        "zero values in WandB. Ensure clients populate "
+                        "'round_flops', compression/decompression split "
+                        "metrics, and 'serialization_flops' if available."
                     ),
                 )
                 self._missing_flop_metrics_warned = True

@@ -43,6 +43,8 @@ from flwr.server.client_proxy import ClientProxy
 from flwr.server.strategy.aggregate import weighted_loss_avg
 from flwr.server.strategy.strategy import Strategy
 
+from project.fed.transport.sparse_codec import decode_or_deserialize_parameters
+
 from functools import reduce
 
 import numpy as np
@@ -251,7 +253,7 @@ class FedAvgHFLASH(Strategy):
         if self.evaluate_fn is None:
             # No evaluation function provided
             return None
-        parameters_ndarrays = parameters_to_ndarrays(parameters)
+        parameters_ndarrays = decode_or_deserialize_parameters(parameters)
         eval_res = self.evaluate_fn(server_round, parameters_ndarrays, {})
         if eval_res is None:
             return None
@@ -343,7 +345,7 @@ class FedAvgHFLASH(Strategy):
             return None, {}
 
         weights_results = [
-            (parameters_to_ndarrays(fit_res.parameters), fit_res.num_examples)
+            (decode_or_deserialize_parameters(fit_res.parameters), fit_res.num_examples)
             for _, fit_res in results
         ]
 

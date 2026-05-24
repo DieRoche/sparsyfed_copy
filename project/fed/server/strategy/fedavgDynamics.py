@@ -29,6 +29,8 @@ from flwr.server.client_proxy import ClientProxy
 from flwr.server.strategy.aggregate import weighted_loss_avg
 from flwr.server.strategy.strategy import Strategy
 
+from project.fed.transport.sparse_codec import decode_or_deserialize_parameters
+
 from project.fed.utils.weight_dynamics_utils import WeightDynamicsTracker
 
 
@@ -118,7 +120,7 @@ class FedAvgDynamics(Strategy):
                 "Initializing weight dynamics tracker with initial parameters",
             )
             self.weight_tracker.update_initial_weights(
-                parameters_to_ndarrays(initial_parameters)
+                decode_or_deserialize_parameters(initial_parameters)
             )
 
         return initial_parameters
@@ -141,7 +143,7 @@ class FedAvgDynamics(Strategy):
 
         # Convert results
         weights_results = [
-            (parameters_to_ndarrays(fit_res.parameters), fit_res.num_examples)
+            (decode_or_deserialize_parameters(fit_res.parameters), fit_res.num_examples)
             for _, fit_res in results
         ]
 
@@ -212,7 +214,7 @@ class FedAvgDynamics(Strategy):
         if self.evaluate_fn is None:
             return None
 
-        parameters_ndarrays = parameters_to_ndarrays(parameters)
+        parameters_ndarrays = decode_or_deserialize_parameters(parameters)
         eval_res = self.evaluate_fn(server_round, parameters_ndarrays, {})
 
         if eval_res is None:
@@ -242,7 +244,7 @@ class FedAvgDynamics(Strategy):
         fit_ins = FitIns(parameters, config)
 
         self.weight_tracker.update_round_start_weights(
-            parameters_to_ndarrays(parameters)
+            decode_or_deserialize_parameters(parameters)
         )
 
         # Sample clients

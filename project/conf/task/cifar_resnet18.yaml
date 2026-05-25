@@ -36,6 +36,7 @@ transport_compression:
   min_tensor_size: 1024
   index_dtype: int32
   value_dtype: float32
+  target_sparsity: ${task.sparsity}
 
 # Client fit config
 fit_config:
@@ -57,23 +58,7 @@ fit_config:
     in_out_eval: false
     mask: false
     noise: 0
-    transport_compression:
-      enabled: true
-      compress_uplink: true
-      compress_downlink: false
-      format: csr_header_arrays_v1
-      first_round_policy: measured_auto
-      later_round_policy: config_sparsity
-      csr_min_sparsity: 0.90
-      mask_values_below_sparsity: 0.85
-      strict_after_first_round: true
-      allow_dense_fallback_after_first_round: false
-      compress_only_float_tensors: true
-      keep_integer_buffers_dense: true
-      min_tensor_size: 1024
-      index_dtype: int32
-      value_dtype: float32
-      target_sparsity: 0.90
+    transport_compression: ${transport_compression}
 
 # Client eval config
 eval_config:

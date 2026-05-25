@@ -74,6 +74,9 @@ class Client(fl.client.NumPyClient):
     _SERIALIZATION_FLOPS_PER_BIT = 1.0
     _CSR_ROW_POINTER_BUILD_COST = 1.0
     _CSR_SERVER_ROW_SCAN_COST = 1.0
+    _CSR_CLIENT_NNZ_GATHER_COST = 2.0
+    _CSR_SERVER_NNZ_SCATTER_COST = 2.0
+    _CSR_SERVER_NNZ_ACCUMULATE_COST = 1.0
 
     def _get_dense_forward_flops(
         self,
@@ -287,12 +290,17 @@ class Client(fl.client.NumPyClient):
             if nnz < 0 or rows < 0:
                 continue
 
-            # Base communication FLOPs already account for sparse index/value
-            # creation and sparse reconstruction using nnz. Here we only add
-            # CSR-structure-specific overhead (crow build/scan) to avoid
-            # double counting value pack/scatter work.
+            # Base communication FLOPs already account for generic sparse
+            # bookkeeping. For CSR transport we still need dedicated
+            # row-pointer work plus nnz-dependent row traversal/scatter costs
+            # executed by the explicit CSR encode/decode pipeline.
             client_extra_flops += self._CSR_ROW_POINTER_BUILD_COST * float(rows + 1)
+            client_extra_flops += self._CSR_CLIENT_NNZ_GATHER_COST * float(nnz)
             server_extra_flops += self._CSR_SERVER_ROW_SCAN_COST * float(rows + 1)
+            server_extra_flops += (
+                self._CSR_SERVER_NNZ_SCATTER_COST
+                + self._CSR_SERVER_NNZ_ACCUMULATE_COST
+            ) * float(nnz)
 
         return float(client_extra_flops), float(server_extra_flops)
 

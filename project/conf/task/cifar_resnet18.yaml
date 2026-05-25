@@ -20,7 +20,7 @@ alpha: 1.25
 sparsity: 0.90
 mask: 0.0
 
-transport_compression:
+transport_compression: &transport_compression
   enabled: true
   compress_uplink: true
   compress_downlink: false
@@ -57,7 +57,7 @@ fit_config:
     in_out_eval: false
     mask: false
     noise: 0
-    transport_compression: ${...transport_compression}
+    transport_compression: *transport_compression
 
 # Client eval config
 eval_config:

@@ -37,7 +37,7 @@ transport_compression:
   index_dtype: int32
   value_dtype: float32
 
-# Client fit config
+# Client fit config double
 fit_config:
   # Net does not require any configuration
   net_config: {}

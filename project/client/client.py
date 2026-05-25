@@ -77,6 +77,10 @@ class Client(fl.client.NumPyClient):
     _CSR_CLIENT_NNZ_GATHER_COST = 2.0
     _CSR_SERVER_NNZ_SCATTER_COST = 2.0
     _CSR_SERVER_NNZ_ACCUMULATE_COST = 1.0
+    _PRUNE_EVENT_COST = 1.0
+    _REGROW_EVENT_COST = 6.0
+    _SIGN_FLIP_COST = 1.0
+    _LAYER_OSCILLATION_COST = 4.0
 
     def _get_dense_forward_flops(
         self,
@@ -121,6 +125,8 @@ class Client(fl.client.NumPyClient):
         client_nonzero_count: int,
         total_param_count: int,
         device: torch.device,
+        server_parameters: NDArrays | None = None,
+        client_parameters: NDArrays | None = None,
     ) -> float:
         """Estimate the floating-point operations executed during local training.
 
@@ -160,13 +166,49 @@ class Client(fl.client.NumPyClient):
         if dense_forward_flops <= 0.0:
             return 0.0
 
-        density = min(max(avg_active_params / float(total_param_count), 0.0), 1.0)
-        sparse_forward_flops = density * dense_forward_flops
+        sparse_forward_flops = 0.0
+        if (
+            isinstance(server_parameters, list)
+            and isinstance(client_parameters, list)
+            and len(server_parameters) == len(client_parameters)
+            and len(server_parameters) > 0
+        ):
+            total_layer_params = float(
+                sum(int(arr.size) for arr in server_parameters if isinstance(arr, np.ndarray))
+            )
+            if total_layer_params > 0.0:
+                for server_arr, client_arr in zip(
+                    server_parameters,
+                    client_parameters,
+                    strict=False,
+                ):
+                    if (
+                        not isinstance(server_arr, np.ndarray)
+                        or not isinstance(client_arr, np.ndarray)
+                        or server_arr.shape != client_arr.shape
+                        or server_arr.size <= 0
+                    ):
+                        continue
+                    layer_param_count = float(server_arr.size)
+                    dense_layer_flops = (
+                        dense_forward_flops * (layer_param_count / total_layer_params)
+                    )
+                    layer_active = (
+                        float(np.count_nonzero(server_arr))
+                        + float(np.count_nonzero(client_arr))
+                    ) / 2.0
+                    layer_density = min(max(layer_active / layer_param_count, 0.0), 1.0)
+                    sparse_forward_flops += dense_layer_flops * layer_density
 
-        per_step_flops = (
+        if sparse_forward_flops <= 0.0:
+            density = min(max(avg_active_params / float(total_param_count), 0.0), 1.0)
+            sparse_forward_flops = density * dense_forward_flops
+
+        forward_backward_flops = (
             batch_size * sparse_forward_flops * (1.0 + self._BACKWARD_MULTIPLIER)
-            + self._OPTIMIZER_COST * avg_active_params
         )
+        optimizer_flops = self._OPTIMIZER_COST * avg_active_params
+        per_step_flops = forward_backward_flops + optimizer_flops
 
         return float(epochs * steps_per_epoch * per_step_flops)
 
@@ -176,6 +218,10 @@ class Client(fl.client.NumPyClient):
         client_nonzero_count: int,
         total_param_count: int,
         bits_per_parameter: int,
+        compress_uplink: bool,
+        compress_downlink: bool,
+        uplink_payload_bytes: int | None = None,
+        downlink_payload_bytes: int | None = None,
     ) -> tuple[float, float, float]:
         """Estimate client-side compression/decompression FLOPs.
 
@@ -193,22 +239,39 @@ class Client(fl.client.NumPyClient):
         ):
             return 0.0, 0.0, 0.0
 
-        compression_scan_flops = self._SPARSE_SCAN_COST * float(total_param_count)
-        compression_sparse_create_flops = (
-            self._SPARSE_INDEX_WRITE_COST + self._QUANTIZE_COST
-        ) * float(client_nonzero_count)
-        compression_flops_clients = (
-            compression_scan_flops + compression_sparse_create_flops
+        compression_flops_clients = 0.0
+        if compress_uplink:
+            compression_scan_flops = self._SPARSE_SCAN_COST * float(total_param_count)
+            compression_sparse_create_flops = (
+                self._SPARSE_INDEX_WRITE_COST + self._QUANTIZE_COST
+            ) * float(client_nonzero_count)
+            dense_to_sparse_transform_flops = (
+                self._SPARSE_RECONSTRUCTION_COST * float(client_nonzero_count)
+            )
+            compression_flops_clients = (
+                compression_scan_flops
+                + compression_sparse_create_flops
+                + dense_to_sparse_transform_flops
+            )
+
+        decompression_flops_clients = 0.0
+        if compress_downlink:
+            decompression_flops_clients = (
+                self._DEQUANTIZE_COST + self._SPARSE_RECONSTRUCTION_COST
+            ) * float(server_nonzero_count)
+
+        uplink_bits = (
+            float(uplink_payload_bytes * 8)
+            if isinstance(uplink_payload_bytes, int) and uplink_payload_bytes > 0
+            else float(bits_per_parameter) * float(total_param_count)
         )
-
-        decompression_flops_clients = (
-            self._DEQUANTIZE_COST + self._SPARSE_RECONSTRUCTION_COST
-        ) * float(server_nonzero_count)
-
-        serialization_flops = (
-            self._SERIALIZATION_FLOPS_PER_BIT
-            * float(bits_per_parameter)
-            * float(total_param_count * 2)
+        downlink_bits = (
+            float(downlink_payload_bytes * 8)
+            if isinstance(downlink_payload_bytes, int) and downlink_payload_bytes > 0
+            else float(bits_per_parameter) * float(total_param_count)
+        )
+        serialization_flops = self._SERIALIZATION_FLOPS_PER_BIT * (
+            uplink_bits + downlink_bits
         )
 
         return (
@@ -304,6 +367,70 @@ class Client(fl.client.NumPyClient):
 
         return float(client_extra_flops), float(server_extra_flops)
 
+    def _estimate_sparse_dynamics_flops(
+        self,
+        before_arrays: NDArrays,
+        after_arrays: NDArrays,
+    ) -> tuple[float, dict[str, float]]:
+        """Estimate dynamic sparsity FLOPs from prune/regrow oscillations."""
+        if not before_arrays or not after_arrays:
+            return 0.0, {}
+
+        paired_len = min(len(before_arrays), len(after_arrays))
+        total = 0.0
+        per_layer: dict[str, float] = {}
+
+        for idx in range(paired_len):
+            before = before_arrays[idx]
+            after = after_arrays[idx]
+            if (
+                not isinstance(before, np.ndarray)
+                or not isinstance(after, np.ndarray)
+                or before.shape != after.shape
+                or not np.issubdtype(before.dtype, np.number)
+                or not np.issubdtype(after.dtype, np.number)
+            ):
+                continue
+
+            b = before.reshape(-1)
+            a = after.reshape(-1)
+            if b.size == 0:
+                continue
+
+            b_nz = b != 0.0
+            a_nz = a != 0.0
+
+            pruned = int(np.count_nonzero(b_nz & (~a_nz)))
+            regrown = int(np.count_nonzero((~b_nz) & a_nz))
+            sign_flips = int(
+                np.count_nonzero(
+                    (b_nz & a_nz) & (np.signbit(b) != np.signbit(a))
+                )
+            )
+
+            before_density = float(np.count_nonzero(b_nz)) / float(b.size)
+            after_density = float(np.count_nonzero(a_nz)) / float(a.size)
+            density_delta = abs(after_density - before_density)
+            oscillation = density_delta * float(a.size)
+
+            layer_flops = (
+                self._PRUNE_EVENT_COST * float(pruned)
+                + self._REGROW_EVENT_COST * float(regrown)
+                + self._SIGN_FLIP_COST * float(sign_flips)
+                + self._LAYER_OSCILLATION_COST * float(oscillation)
+            )
+            if layer_flops <= 0.0:
+                continue
+
+            per_layer[f"layer_{idx}_sparsity_dynamics_flops"] = float(layer_flops)
+            total += layer_flops
+
+        return float(total), per_layer
+
+    def _should_count_sparsity_dynamics_flops(self, config: ClientConfig) -> bool:
+        """Return True when dynamic sparsity FLOP accounting is explicitly enabled."""
+        return bool(config.extra.get("count_sparsity_dynamics_flops", False))
+
     def __init__(
         self,
         cid: int | str,
@@ -383,8 +510,6 @@ class Client(fl.client.NumPyClient):
 
         server_nonzero_count, server_total_count = count_nonzero_elements(parameters)
 
-        del parameters
-
         trainloader = self.dataloader_gen(
             self.cid,
             False,
@@ -443,6 +568,8 @@ class Client(fl.client.NumPyClient):
                 client_nonzero_count,
                 server_total_count,
                 device,
+                server_parameters=parameters,
+                client_parameters=updated_parameters,
             )
 
             metrics["server_to_client_nonzero"] = float(server_nonzero_count)
@@ -461,27 +588,26 @@ class Client(fl.client.NumPyClient):
                 server_nonzero_count + client_nonzero_count
             )
             metrics["round_flops"] = round_flops
-            (
-                compression_flops_clients,
-                decompression_flops_clients,
-                serialization_flops,
-            ) = self._estimate_communication_flops(
-                server_nonzero_count,
-                client_nonzero_count,
-                server_total_count,
-                bits_per_parameter,
+            if self._should_count_sparsity_dynamics_flops(config):
+                dynamics_flops, per_layer_dynamics_flops = (
+                    self._estimate_sparse_dynamics_flops(
+                        parameters, updated_parameters
+                    )
+                )
+                metrics["sparsity_dynamics_flops"] = dynamics_flops
+                metrics["round_flops"] += dynamics_flops
+                metrics.update(per_layer_dynamics_flops)
+            else:
+                metrics["sparsity_dynamics_flops"] = 0.0
+            transport_cfg = config.extra.get("transport_compression", {})
+            compress_uplink = bool(
+                transport_cfg.get("enabled", False)
+                and transport_cfg.get("compress_uplink", False)
             )
-            metrics["compression_flops_clients"] = compression_flops_clients
-            metrics["compression_flops_server"] = 0.0
-            metrics["decompression_flops_clients"] = decompression_flops_clients
-            metrics["decompression_flops_server"] = 0.0
-            metrics["serialization_flops"] = serialization_flops
-            metrics["round_flops_compression"] = (
-                compression_flops_clients
-                + decompression_flops_clients
-                + serialization_flops
+            compress_downlink = bool(
+                transport_cfg.get("enabled", False)
+                and transport_cfg.get("compress_downlink", False)
             )
-            metrics["round_flops_decompression"] = decompression_flops_clients
 
             updates_dir_raw = config.extra.get("client_updates_dir")
             if updates_dir_raw:
@@ -519,10 +645,8 @@ class Client(fl.client.NumPyClient):
                         meta_file,
                     )
 
-            transport_cfg = config.extra.get("transport_compression", {})
             if (
-                transport_cfg.get("enabled", False)
-                and transport_cfg.get("compress_uplink", False)
+                compress_uplink
             ):
                 updated_parameters, transport_metrics = encode_sparse_transport(
                     arrays=updated_parameters,
@@ -549,12 +673,52 @@ class Client(fl.client.NumPyClient):
                     + csr_decompression_server_extra_flops
                 )
 
+            (
+                compression_flops_clients,
+                decompression_flops_clients,
+                serialization_flops,
+            ) = self._estimate_communication_flops(
+                server_nonzero_count,
+                client_nonzero_count,
+                server_total_count,
+                bits_per_parameter,
+                compress_uplink=compress_uplink,
+                compress_downlink=compress_downlink,
+                uplink_payload_bytes=(
+                    int(metrics.get("upload_payload_bytes"))
+                    if isinstance(metrics.get("upload_payload_bytes"), (int, float))
+                    else None
+                ),
+                downlink_payload_bytes=None,
+            )
+            metrics["compression_flops_clients"] = compression_flops_clients + float(
+                metrics.get("compression_flops_clients", 0.0)
+            )
+            metrics["compression_flops_server"] = 0.0
+            metrics["decompression_flops_clients"] = decompression_flops_clients
+            metrics["decompression_flops_server"] = float(
+                metrics.get("decompression_flops_server", 0.0)
+            )
+            metrics["serialization_flops"] = serialization_flops
+            metrics["round_flops_compression"] = (
+                metrics["compression_flops_clients"]
+                + metrics["compression_flops_server"]
+                + metrics["decompression_flops_clients"]
+                + metrics["decompression_flops_server"]
+                + metrics["serialization_flops"]
+            )
+            metrics["round_flops_decompression"] = (
+                metrics["decompression_flops_clients"]
+                + metrics["decompression_flops_server"]
+            )
+
             return (
                 updated_parameters,
                 num_samples,
                 metrics,
             )
         finally:
+            parameters = None
             trainloader = None
             if self.net is not None:
                 self.net.to("cpu")

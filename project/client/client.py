@@ -180,6 +180,10 @@ class Client(fl.client.NumPyClient):
         client_nonzero_count: int,
         total_param_count: int,
         bits_per_parameter: int,
+        compress_uplink: bool,
+        compress_downlink: bool,
+        uplink_payload_bytes: int | None = None,
+        downlink_payload_bytes: int | None = None,
     ) -> tuple[float, float, float]:
         """Estimate client-side compression/decompression FLOPs.
 
@@ -197,22 +201,34 @@ class Client(fl.client.NumPyClient):
         ):
             return 0.0, 0.0, 0.0
 
-        compression_scan_flops = self._SPARSE_SCAN_COST * float(total_param_count)
-        compression_sparse_create_flops = (
-            self._SPARSE_INDEX_WRITE_COST + self._QUANTIZE_COST
-        ) * float(client_nonzero_count)
-        compression_flops_clients = (
-            compression_scan_flops + compression_sparse_create_flops
+        compression_flops_clients = 0.0
+        if compress_uplink:
+            compression_scan_flops = self._SPARSE_SCAN_COST * float(total_param_count)
+            compression_sparse_create_flops = (
+                self._SPARSE_INDEX_WRITE_COST + self._QUANTIZE_COST
+            ) * float(client_nonzero_count)
+            compression_flops_clients = (
+                compression_scan_flops + compression_sparse_create_flops
+            )
+
+        decompression_flops_clients = 0.0
+        if compress_downlink:
+            decompression_flops_clients = (
+                self._DEQUANTIZE_COST + self._SPARSE_RECONSTRUCTION_COST
+            ) * float(server_nonzero_count)
+
+        uplink_bits = (
+            float(uplink_payload_bytes * 8)
+            if isinstance(uplink_payload_bytes, int) and uplink_payload_bytes > 0
+            else float(bits_per_parameter) * float(total_param_count)
         )
-
-        decompression_flops_clients = (
-            self._DEQUANTIZE_COST + self._SPARSE_RECONSTRUCTION_COST
-        ) * float(server_nonzero_count)
-
-        serialization_flops = (
-            self._SERIALIZATION_FLOPS_PER_BIT
-            * float(bits_per_parameter)
-            * float(total_param_count * 2)
+        downlink_bits = (
+            float(downlink_payload_bytes * 8)
+            if isinstance(downlink_payload_bytes, int) and downlink_payload_bytes > 0
+            else float(bits_per_parameter) * float(total_param_count)
+        )
+        serialization_flops = self._SERIALIZATION_FLOPS_PER_BIT * (
+            uplink_bits + downlink_bits
         )
 
         return (
@@ -538,27 +554,15 @@ class Client(fl.client.NumPyClient):
                 metrics.update(per_layer_dynamics_flops)
             else:
                 metrics["sparsity_dynamics_flops"] = 0.0
-            (
-                compression_flops_clients,
-                decompression_flops_clients,
-                serialization_flops,
-            ) = self._estimate_communication_flops(
-                server_nonzero_count,
-                client_nonzero_count,
-                server_total_count,
-                bits_per_parameter,
+            transport_cfg = config.extra.get("transport_compression", {})
+            compress_uplink = bool(
+                transport_cfg.get("enabled", False)
+                and transport_cfg.get("compress_uplink", False)
             )
-            metrics["compression_flops_clients"] = compression_flops_clients
-            metrics["compression_flops_server"] = 0.0
-            metrics["decompression_flops_clients"] = decompression_flops_clients
-            metrics["decompression_flops_server"] = 0.0
-            metrics["serialization_flops"] = serialization_flops
-            metrics["round_flops_compression"] = (
-                compression_flops_clients
-                + decompression_flops_clients
-                + serialization_flops
+            compress_downlink = bool(
+                transport_cfg.get("enabled", False)
+                and transport_cfg.get("compress_downlink", False)
             )
-            metrics["round_flops_decompression"] = decompression_flops_clients
 
             updates_dir_raw = config.extra.get("client_updates_dir")
             if updates_dir_raw:
@@ -596,10 +600,8 @@ class Client(fl.client.NumPyClient):
                         meta_file,
                     )
 
-            transport_cfg = config.extra.get("transport_compression", {})
             if (
-                transport_cfg.get("enabled", False)
-                and transport_cfg.get("compress_uplink", False)
+                compress_uplink
             ):
                 updated_parameters, transport_metrics = encode_sparse_transport(
                     arrays=updated_parameters,
@@ -625,6 +627,45 @@ class Client(fl.client.NumPyClient):
                     csr_compression_extra_flops
                     + csr_decompression_server_extra_flops
                 )
+
+            (
+                compression_flops_clients,
+                decompression_flops_clients,
+                serialization_flops,
+            ) = self._estimate_communication_flops(
+                server_nonzero_count,
+                client_nonzero_count,
+                server_total_count,
+                bits_per_parameter,
+                compress_uplink=compress_uplink,
+                compress_downlink=compress_downlink,
+                uplink_payload_bytes=(
+                    int(metrics.get("upload_payload_bytes"))
+                    if isinstance(metrics.get("upload_payload_bytes"), (int, float))
+                    else None
+                ),
+                downlink_payload_bytes=None,
+            )
+            metrics["compression_flops_clients"] = compression_flops_clients + float(
+                metrics.get("compression_flops_clients", 0.0)
+            )
+            metrics["compression_flops_server"] = 0.0
+            metrics["decompression_flops_clients"] = decompression_flops_clients
+            metrics["decompression_flops_server"] = float(
+                metrics.get("decompression_flops_server", 0.0)
+            )
+            metrics["serialization_flops"] = serialization_flops
+            metrics["round_flops_compression"] = (
+                metrics["compression_flops_clients"]
+                + metrics["compression_flops_server"]
+                + metrics["decompression_flops_clients"]
+                + metrics["decompression_flops_server"]
+                + metrics["serialization_flops"]
+            )
+            metrics["round_flops_decompression"] = (
+                metrics["decompression_flops_clients"]
+                + metrics["decompression_flops_server"]
+            )
 
             return (
                 updated_parameters,

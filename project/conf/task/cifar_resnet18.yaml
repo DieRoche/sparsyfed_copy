@@ -36,7 +36,7 @@ transport_compression: &transport_compression
   min_tensor_size: 1024
   index_dtype: int32
   value_dtype: float32
-  target_sparsity: ${..sparsity}
+  target_sparsity: ${task.sparsity}
 
 # Client fit config double
 fit_config:

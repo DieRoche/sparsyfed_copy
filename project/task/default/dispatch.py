@@ -152,9 +152,9 @@ def dispatch_config(
     # Only consider existing config dicts as matches
     if fit_config is not None and eval_config is not None:
         return get_on_fit_config_fn(
-            cast(dict, OmegaConf.to_container(fit_config)),
+            cast(dict, OmegaConf.to_container(fit_config, resolve=True)),
         ), get_on_evaluate_config_fn(
-            cast(dict, OmegaConf.to_container(eval_config)),
+            cast(dict, OmegaConf.to_container(eval_config, resolve=True)),
         )
 
     return None

@@ -159,6 +159,12 @@ class WandbServer(Server):
                     "overall_traffic": float(upload_traffic + download_traffic),
                 })
 
+                self._update_transport_metrics(
+                    fit_results=fit_results,
+                    fit_metrics=fit_metrics,
+                    upload_traffic=float(upload_traffic),
+                )
+
                 self._update_flop_metrics(
                     fit_results,
                     fit_metrics,
@@ -258,6 +264,63 @@ class WandbServer(Server):
         elapsed = end_time - start_time
         log(INFO, "FL finished in %s", elapsed)
         return history
+
+    def _update_transport_metrics(
+        self,
+        fit_results: list[tuple[ClientProxy, FitRes]],
+        fit_metrics: dict[str, float | int | bool | str],
+        upload_traffic: float,
+    ) -> None:
+        """Aggregate and inject sparse transport metrics from client fit results."""
+
+        sums = {
+            "upload_dense_bytes": 0.0,
+            "upload_payload_bytes": 0.0,
+            "upload_csr_tensors": 0.0,
+            "upload_mask_value_tensors": 0.0,
+            "upload_dense_tensors": 0.0,
+            "upload_total_nnz": 0.0,
+            "upload_total_numel": 0.0,
+            "upload_csr_expected_but_low_sparsity_tensors": 0.0,
+            "upload_csr_expected_but_low_sparsity_numel": 0.0,
+        }
+        clients_reporting_dense_reference = 0
+
+        for _, fit_res in fit_results:
+            metrics = getattr(fit_res, "metrics", None) or {}
+            dense_bytes_value = metrics.get("upload_dense_bytes")
+            if isinstance(dense_bytes_value, Number):
+                clients_reporting_dense_reference += 1
+            for key in sums:
+                value = metrics.get(key, 0.0)
+                if isinstance(value, Number):
+                    sums[key] += float(value)
+
+        dense_reference = sums["upload_dense_bytes"]
+        if clients_reporting_dense_reference <= 0:
+            dense_reference = float(upload_traffic)
+        total_numel = sums["upload_total_numel"]
+        total_nnz = sums["upload_total_nnz"]
+
+        compression_ratio = (
+            float(upload_traffic / dense_reference) if dense_reference > 0 else 1.0
+        )
+
+        fit_metrics.update({
+            "upload_dense_reference_traffic": float(dense_reference),
+            "upload_transport_payload_bytes_reported": float(sums["upload_payload_bytes"]),
+            "upload_transport_compression_ratio": float(compression_ratio),
+            "upload_transport_saving_bytes": float(dense_reference - upload_traffic),
+            "upload_transport_saving_ratio": float(1.0 - compression_ratio),
+            "upload_transport_csr_tensors": float(sums["upload_csr_tensors"]),
+            "upload_transport_mask_value_tensors": float(sums["upload_mask_value_tensors"]),
+            "upload_transport_dense_tensors": float(sums["upload_dense_tensors"]),
+            "upload_transport_total_nnz": float(total_nnz),
+            "upload_transport_total_numel": float(total_numel),
+            "upload_transport_actual_sparsity": float(1.0 - (total_nnz / total_numel)) if total_numel > 0 else 0.0,
+            "upload_csr_expected_but_low_sparsity_tensors": float(sums["upload_csr_expected_but_low_sparsity_tensors"]),
+            "upload_csr_expected_but_low_sparsity_numel": float(sums["upload_csr_expected_but_low_sparsity_numel"]),
+        })
 
     def _compute_upload_traffic_for_round(
         self,

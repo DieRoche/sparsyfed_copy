@@ -15,6 +15,7 @@ from pydantic import BaseModel
 import torch
 from torch import nn
 
+from project.fed.compression.sparse_transport import encode_sparse_transport
 from project.fed.utils.utils import (
     count_nonzero_elements,
     estimate_forward_flops,
@@ -461,6 +462,24 @@ class Client(fl.client.NumPyClient):
                         },
                         meta_file,
                     )
+
+            transport_cfg = config.extra.get("transport_compression", {})
+            if (
+                transport_cfg.get("enabled", False)
+                and transport_cfg.get("compress_uplink", False)
+            ):
+                updated_parameters, transport_metrics = encode_sparse_transport(
+                    arrays=updated_parameters,
+                    cfg=transport_cfg,
+                    curr_round=int(config.extra["curr_round"]),
+                    target_sparsity=float(
+                        transport_cfg.get(
+                            "target_sparsity",
+                            transport_cfg.get("sparsity", 0.0),
+                        )
+                    ),
+                )
+                metrics.update(transport_metrics)
 
             return (
                 updated_parameters,

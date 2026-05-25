@@ -29,6 +29,8 @@ from flwr.server.client_proxy import ClientProxy
 from flwr.server.strategy.aggregate import weighted_loss_avg
 from flwr.server.strategy.strategy import Strategy
 
+from project.fed.compression.sparse_transport import decode_sparse_transport_if_needed
+
 from project.fed.utils.weight_dynamics_utils import WeightDynamicsTracker
 
 
@@ -141,7 +143,7 @@ class FedAvgDynamics(Strategy):
 
         # Convert results
         weights_results = [
-            (parameters_to_ndarrays(fit_res.parameters), fit_res.num_examples)
+            (decode_sparse_transport_if_needed(parameters_to_ndarrays(fit_res.parameters)), fit_res.num_examples)
             for _, fit_res in results
         ]
 

@@ -72,6 +72,8 @@ class Client(fl.client.NumPyClient):
     _DEQUANTIZE_COST = 2.0
     _SPARSE_RECONSTRUCTION_COST = 1.0
     _SERIALIZATION_FLOPS_PER_BIT = 1.0
+    _CSR_ROW_POINTER_BUILD_COST = 1.0
+    _CSR_SERVER_ROW_SCAN_COST = 1.0
 
     def _get_dense_forward_flops(
         self,
@@ -247,6 +249,52 @@ class Client(fl.client.NumPyClient):
             return 0
 
         return max(source_hist, key=source_hist.get)
+
+    def _estimate_csr_transport_flops(
+        self,
+        encoded_arrays: list[np.ndarray],
+    ) -> tuple[float, float]:
+        """Estimate extra uplink CSR processing FLOPs (client compression + server decompression)."""
+        if not encoded_arrays:
+            return 0.0, 0.0
+
+        header_arr = encoded_arrays[0]
+        if not isinstance(header_arr, np.ndarray) or header_arr.dtype != np.uint8:
+            return 0.0, 0.0
+
+        try:
+            header = json.loads(header_arr.tobytes().decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return 0.0, 0.0
+
+        entries = header.get("entries", [])
+        if not isinstance(entries, list):
+            return 0.0, 0.0
+
+        client_extra_flops = 0.0
+        server_extra_flops = 0.0
+        for entry in entries:
+            if not isinstance(entry, dict) or entry.get("scheme") != "csr":
+                continue
+
+            nnz = int(entry.get("nnz", 0))
+            matrix_shape = entry.get("matrix_shape", [])
+            rows = (
+                int(matrix_shape[0])
+                if isinstance(matrix_shape, list) and len(matrix_shape) >= 1
+                else 0
+            )
+            if nnz < 0 or rows < 0:
+                continue
+
+            # Base communication FLOPs already account for sparse index/value
+            # creation and sparse reconstruction using nnz. Here we only add
+            # CSR-structure-specific overhead (crow build/scan) to avoid
+            # double counting value pack/scatter work.
+            client_extra_flops += self._CSR_ROW_POINTER_BUILD_COST * float(rows + 1)
+            server_extra_flops += self._CSR_SERVER_ROW_SCAN_COST * float(rows + 1)
+
+        return float(client_extra_flops), float(server_extra_flops)
 
     def __init__(
         self,
@@ -480,6 +528,18 @@ class Client(fl.client.NumPyClient):
                     ),
                 )
                 metrics.update(transport_metrics)
+                (
+                    csr_compression_extra_flops,
+                    csr_decompression_server_extra_flops,
+                ) = self._estimate_csr_transport_flops(updated_parameters)
+                metrics["compression_flops_clients"] += csr_compression_extra_flops
+                metrics["decompression_flops_server"] += (
+                    csr_decompression_server_extra_flops
+                )
+                metrics["round_flops_compression"] += (
+                    csr_compression_extra_flops
+                    + csr_decompression_server_extra_flops
+                )
 
             return (
                 updated_parameters,

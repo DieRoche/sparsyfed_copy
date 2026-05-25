@@ -57,7 +57,7 @@ fit_config:
     in_out_eval: false
     mask: false
     noise: 0
-    transport_compression: ${transport_compression}
+    transport_compression: ${...transport_compression}
 
 # Client eval config
 eval_config:

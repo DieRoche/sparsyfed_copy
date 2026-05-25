@@ -74,6 +74,13 @@ class Client(fl.client.NumPyClient):
     _SERIALIZATION_FLOPS_PER_BIT = 1.0
     _CSR_ROW_POINTER_BUILD_COST = 1.0
     _CSR_SERVER_ROW_SCAN_COST = 1.0
+    _CSR_CLIENT_NNZ_GATHER_COST = 2.0
+    _CSR_SERVER_NNZ_SCATTER_COST = 2.0
+    _CSR_SERVER_NNZ_ACCUMULATE_COST = 1.0
+    _PRUNE_EVENT_COST = 1.0
+    _REGROW_EVENT_COST = 6.0
+    _SIGN_FLIP_COST = 1.0
+    _LAYER_OSCILLATION_COST = 4.0
 
     def _get_dense_forward_flops(
         self,
@@ -287,14 +294,79 @@ class Client(fl.client.NumPyClient):
             if nnz < 0 or rows < 0:
                 continue
 
-            # Base communication FLOPs already account for sparse index/value
-            # creation and sparse reconstruction using nnz. Here we only add
-            # CSR-structure-specific overhead (crow build/scan) to avoid
-            # double counting value pack/scatter work.
+            # Base communication FLOPs already account for generic sparse
+            # bookkeeping. For CSR transport we still need dedicated
+            # row-pointer work plus nnz-dependent row traversal/scatter costs
+            # executed by the explicit CSR encode/decode pipeline.
             client_extra_flops += self._CSR_ROW_POINTER_BUILD_COST * float(rows + 1)
+            client_extra_flops += self._CSR_CLIENT_NNZ_GATHER_COST * float(nnz)
             server_extra_flops += self._CSR_SERVER_ROW_SCAN_COST * float(rows + 1)
+            server_extra_flops += (
+                self._CSR_SERVER_NNZ_SCATTER_COST
+                + self._CSR_SERVER_NNZ_ACCUMULATE_COST
+            ) * float(nnz)
 
         return float(client_extra_flops), float(server_extra_flops)
+
+    def _estimate_sparse_dynamics_flops(
+        self,
+        before_arrays: NDArrays,
+        after_arrays: NDArrays,
+    ) -> tuple[float, dict[str, float]]:
+        """Estimate dynamic sparsity FLOPs from prune/regrow oscillations."""
+        if not before_arrays or not after_arrays:
+            return 0.0, {}
+
+        paired_len = min(len(before_arrays), len(after_arrays))
+        total = 0.0
+        per_layer: dict[str, float] = {}
+
+        for idx in range(paired_len):
+            before = before_arrays[idx]
+            after = after_arrays[idx]
+            if (
+                not isinstance(before, np.ndarray)
+                or not isinstance(after, np.ndarray)
+                or before.shape != after.shape
+                or not np.issubdtype(before.dtype, np.number)
+                or not np.issubdtype(after.dtype, np.number)
+            ):
+                continue
+
+            b = before.astype(np.float64, copy=False).reshape(-1)
+            a = after.astype(np.float64, copy=False).reshape(-1)
+            if b.size == 0:
+                continue
+
+            b_nz = b != 0.0
+            a_nz = a != 0.0
+
+            pruned = int(np.count_nonzero(b_nz & (~a_nz)))
+            regrown = int(np.count_nonzero((~b_nz) & a_nz))
+            sign_flips = int(
+                np.count_nonzero(
+                    (b_nz & a_nz) & (np.signbit(b) != np.signbit(a))
+                )
+            )
+
+            before_density = float(np.count_nonzero(b_nz)) / float(b.size)
+            after_density = float(np.count_nonzero(a_nz)) / float(a.size)
+            density_delta = abs(after_density - before_density)
+            oscillation = density_delta * float(a.size)
+
+            layer_flops = (
+                self._PRUNE_EVENT_COST * float(pruned)
+                + self._REGROW_EVENT_COST * float(regrown)
+                + self._SIGN_FLIP_COST * float(sign_flips)
+                + self._LAYER_OSCILLATION_COST * float(oscillation)
+            )
+            if layer_flops <= 0.0:
+                continue
+
+            per_layer[f"layer_{idx}_sparsity_dynamics_flops"] = float(layer_flops)
+            total += layer_flops
+
+        return float(total), per_layer
 
     def __init__(
         self,
@@ -375,8 +447,6 @@ class Client(fl.client.NumPyClient):
 
         server_nonzero_count, server_total_count = count_nonzero_elements(parameters)
 
-        del parameters
-
         trainloader = self.dataloader_gen(
             self.cid,
             False,
@@ -453,6 +523,12 @@ class Client(fl.client.NumPyClient):
                 server_nonzero_count + client_nonzero_count
             )
             metrics["round_flops"] = round_flops
+            dynamics_flops, per_layer_dynamics_flops = (
+                self._estimate_sparse_dynamics_flops(parameters, updated_parameters)
+            )
+            metrics["sparsity_dynamics_flops"] = dynamics_flops
+            metrics["round_flops"] += dynamics_flops
+            metrics.update(per_layer_dynamics_flops)
             (
                 compression_flops_clients,
                 decompression_flops_clients,
@@ -547,6 +623,7 @@ class Client(fl.client.NumPyClient):
                 metrics,
             )
         finally:
+            parameters = None
             trainloader = None
             if self.net is not None:
                 self.net.to("cpu")

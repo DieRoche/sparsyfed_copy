@@ -1,7 +1,7 @@
 ---
 # Federated setup
 num_rounds: 100
-num_total_clients: 10
+num_total_clients: 100
 num_clients_per_round: 10
 num_evaluate_clients_per_round: 10
 

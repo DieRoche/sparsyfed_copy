@@ -239,6 +239,7 @@ def get_on_fit_config_fn(fit_config: dict) -> OnFitConfigFN:
         """
         # resolve and convert to python dict
         fit_config["extra"]["curr_round"] = server_round  # add round info
+
         return fit_config
 
     return fit_config_fn

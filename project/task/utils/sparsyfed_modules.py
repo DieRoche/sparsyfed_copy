@@ -153,6 +153,10 @@ class SparsyFedLinear(nn.Module):
         self.bias = nn.Parameter(torch.empty(out_features)) if self.b else None
         self.spectral_norm_handler = SpectralNormHandler()
         self.sparsity = sparsity
+        self.last_input_density = 1.0
+        self.last_sparse_input_nnz = 0
+        self.last_sparse_input_numel = 0
+        self.last_sparsification_overhead = 0.0
 
     def __repr__(self):
         return (
@@ -175,7 +179,7 @@ class SparsyFedLinear(nn.Module):
         else:
             # Avoid to sparsify during the evaluation
             sparsity = 0.0
-        return sparsyfed_linear.apply(input, weight, self.bias, sparsity)
+        return sparsyfed_linear.apply(input, weight, self.bias, sparsity), sparsity
 
     def forward(self, input):
         # Apply the re-parametrisation to `self.weight` using `self.alpha`
@@ -190,9 +194,16 @@ class SparsyFedLinear(nn.Module):
                 torch.abs(self.weight), self.alpha
             )
 
-        output = self._call_sparsyfed_linear(input, sparsyfed_weight)
+        output, applied_sparsity = self._call_sparsyfed_linear(input, sparsyfed_weight)
+        with torch.no_grad():
+            sparse_input = matrix_drop(input, max(1 - float(applied_sparsity), 1e-7))
+            nnz = int(torch.count_nonzero(sparse_input).item())
+            numel = int(sparse_input.numel())
+            self.last_sparse_input_nnz = nnz
+            self.last_sparse_input_numel = numel
+            self.last_input_density = float(nnz / numel) if numel else 1.0
+            self.last_sparsification_overhead = float(2 * numel + nnz)
 
-        # Return the output
         return output
 
 

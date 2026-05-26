@@ -24,6 +24,38 @@ def _bytes_for_mask_values(numel: int, nnz: int, value_dtype: np.dtype) -> int:
     return int((numel + 7) // 8 + nnz * value_dtype.itemsize)
 
 
+
+
+def _estimate_transport_flops(entries: list[dict[str, Any]], payload_arrays: list[np.ndarray]) -> dict[str, float]:
+    """Estimate algorithmic transport operation counts from actual payload metadata."""
+
+    compression = 0.0
+    decompression = 0.0
+    for entry in entries:
+        scheme = str(entry.get("scheme", "dense"))
+        numel = int(entry.get("numel", 0))
+        nnz = int(entry.get("nnz", 0))
+
+        if scheme == "mask_values":
+            compression += float(numel + numel + numel + nnz + nnz)
+            decompression += float(numel + numel + nnz + nnz)
+        elif scheme == "csr":
+            matrix_shape = entry.get("matrix_shape", [numel, 1])
+            rows = int(matrix_shape[0]) if matrix_shape else numel
+            compression += float(numel + rows + nnz + nnz + nnz)
+            decompression += float((rows + 1) + rows + nnz + numel)
+
+    payload_bytes = float(sum(int(arr.nbytes) for arr in payload_arrays))
+    serialization = payload_bytes * 8.0
+    return {
+        "compression_flops_clients": compression,
+        "compression_flops_server": 0.0,
+        "decompression_flops_clients": 0.0,
+        "decompression_flops_server": decompression,
+        "serialization_flops": serialization,
+    }
+
+
 def encode_sparse_transport(
     arrays: list[np.ndarray],
     cfg: dict,
@@ -189,6 +221,8 @@ def encode_sparse_transport(
     header_arr = np.frombuffer(header_bytes, dtype=np.uint8).copy()
     payload_bytes = int(header_arr.nbytes + payload_no_header_bytes)
 
+    transport_flops = _estimate_transport_flops(entries=entries, payload_arrays=[header_arr, *payload_arrays])
+
     metrics = {
         "upload_dense_bytes": float(dense_bytes),
         "upload_payload_bytes": float(payload_bytes),
@@ -205,6 +239,7 @@ def encode_sparse_transport(
         "upload_csr_expected_but_low_sparsity_tensors": int(low_sparsity_tensors),
         "upload_csr_expected_but_low_sparsity_numel": int(low_sparsity_numel),
     }
+    metrics.update(transport_flops)
     return [header_arr, *payload_arrays], metrics
 
 

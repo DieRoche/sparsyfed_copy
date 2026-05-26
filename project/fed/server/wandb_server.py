@@ -437,7 +437,9 @@ class WandbServer(Server):
             if per_client_training_flops <= 0.0 and isinstance(round_flops, Number):
                 per_client_training_flops = float(round_flops)
             aggregation_flops = metrics.get("aggregation_flops")
-            evaluation_flops = metrics.get("evaluation_flops")
+            # Intentionally ignore fit-stage evaluation_flops from client fit metrics.
+            # Option B finalizes evaluation compute only after distributed evaluation
+            # aggregation to avoid double counting and provisional round_flops logging.
             per_client_aggregation_flops = (
                 float(aggregation_flops)
                 if isinstance(aggregation_flops, Number)
@@ -581,7 +583,6 @@ class WandbServer(Server):
         )
         merged_values["round_flops_without_evaluation"] = merged_values["fit_round_flops"]
         merged_values["evaluation_flops"] = 0.0
-        merged_values["round_flops"] = merged_values["fit_round_flops"]
         merged_values["round_flops_compression"] = max(
             merged_values["compression_flops_clients"]
             + merged_values["compression_flops_server"]
@@ -592,6 +593,9 @@ class WandbServer(Server):
         )
 
         fit_metrics.update(merged_values)
+        # Keep fit-stage logging free of provisional round_flops; final round_flops is
+        # emitted only once in _finalize_round_flop_metrics after evaluation aggregation.
+        fit_metrics.pop("round_flops", None)
 
         fit_metrics.pop("round_flops_decompression", None)
         fit_metrics.pop("total_flops_decompression", None)

@@ -179,7 +179,7 @@ class SparsyFedLinear(nn.Module):
         else:
             # Avoid to sparsify during the evaluation
             sparsity = 0.0
-        return sparsyfed_linear.apply(input, weight, self.bias, sparsity)
+        return sparsyfed_linear.apply(input, weight, self.bias, sparsity), sparsity
 
     def forward(self, input):
         # Apply the re-parametrisation to `self.weight` using `self.alpha`
@@ -194,9 +194,9 @@ class SparsyFedLinear(nn.Module):
                 torch.abs(self.weight), self.alpha
             )
 
-        output = self._call_sparsyfed_linear(input, sparsyfed_weight)
+        output, applied_sparsity = self._call_sparsyfed_linear(input, sparsyfed_weight)
         with torch.no_grad():
-            sparse_input = matrix_drop(input, max(1 - float(self.sparsity), 1e-7))
+            sparse_input = matrix_drop(input, max(1 - float(applied_sparsity), 1e-7))
             nnz = int(torch.count_nonzero(sparse_input).item())
             numel = int(sparse_input.numel())
             self.last_sparse_input_nnz = nnz

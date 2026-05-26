@@ -144,7 +144,9 @@ def main(cfg: DictConfig) -> None:
             if cfg.fed.deterministic_client_sampling:
                 adjusted_seed = cfg.fed.seed ^ fs_manager.checkpoint_index
             else:
-                adjusted_seed = secrets.randbits(63)
+                # Keep in NumPy legacy seed bounds [0, 2**32 - 1]
+                # because this value is also passed to seed_everything().
+                adjusted_seed = secrets.randbelow(2**32)
                 log(
                     logging.INFO,
                     "Using non-deterministic client selection seed: %s",

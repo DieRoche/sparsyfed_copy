@@ -256,14 +256,30 @@ class sparsyfed_conv2d(Function):
         }
 
         ctx.save_for_backward(sparse_input, weight, bias)
+        nnz = int(torch.count_nonzero(sparse_input).item())
+        numel = int(sparse_input.numel())
+        overhead = float(2 * numel + nnz)
 
-        return output, in_threshold
+        return (
+            output,
+            in_threshold,
+            torch.tensor(nnz, device=input.device, dtype=torch.int64),
+            torch.tensor(numel, device=input.device, dtype=torch.int64),
+            torch.tensor(overhead, device=input.device, dtype=input.dtype),
+        )
 
     # Use @once_differentiable by default unless we intend to double backward
     @staticmethod
     @once_differentiable
     # def backward(ctx, grad_output, grad_wt_th, grad_in_th):
-    def backward(ctx, grad_output, grad_in_th):
+    def backward(
+        ctx,
+        grad_output,
+        grad_in_th,
+        grad_sparse_nnz,
+        grad_sparse_numel,
+        grad_sparse_overhead,
+    ):
         grad_output = grad_output.contiguous()
         return convolution_backward(ctx, grad_output)
 
@@ -310,6 +326,10 @@ class SparsyFedConv2D(nn.Module):
         self.epoch = 0
         self.batch_idx = 0
         self.spectral_norm_handler = SpectralNormHandler()
+        self.last_input_density = 1.0
+        self.last_sparse_input_nnz = 0
+        self.last_sparse_input_numel = 0
+        self.last_sparsification_overhead = 0.0
 
     def __repr__(self):
         return (
@@ -338,7 +358,7 @@ class SparsyFedConv2D(nn.Module):
             # Avoid to sparsify during the evaluation
             sparsity = 0.0
 
-        output, in_threshold = sparsyfed_conv2d.apply(
+        output, in_threshold, sparse_input_nnz, sparse_input_numel, sparsification_overhead = sparsyfed_conv2d.apply(
             input,
             weight,
             self.bias,
@@ -354,6 +374,14 @@ class SparsyFedConv2D(nn.Module):
         if sparsity != 0.0:
             # otherwise, it is not updated
             self.in_threshold = in_threshold
+        self.last_sparse_input_nnz = int(sparse_input_nnz.item())
+        self.last_sparse_input_numel = int(sparse_input_numel.item())
+        self.last_input_density = (
+            float(self.last_sparse_input_nnz / self.last_sparse_input_numel)
+            if self.last_sparse_input_numel > 0
+            else 1.0
+        )
+        self.last_sparsification_overhead = float(sparsification_overhead.item())
 
         return output
 
@@ -441,6 +469,10 @@ class SparsyFedConv2DEffnet(nn.Module):
         self.groups = groups
         self.padding_mode = padding_mode
         self.b = bias
+        self.last_input_density = 1.0
+        self.last_sparse_input_nnz = 0
+        self.last_sparse_input_numel = 0
+        self.last_sparsification_overhead = 0.0
 
     def __repr__(self) -> str:
         return (
@@ -467,7 +499,7 @@ class SparsyFedConv2DEffnet(nn.Module):
         else:
             sparsity = 0.0
 
-        output, in_threshold = sparsyfed_conv2d.apply(
+        output, in_threshold, sparse_input_nnz, sparse_input_numel, sparsification_overhead = sparsyfed_conv2d.apply(
             input,
             weight,
             self.bias,
@@ -481,6 +513,14 @@ class SparsyFedConv2DEffnet(nn.Module):
 
         if sparsity != 0.0:
             self.in_threshold = in_threshold
+        self.last_sparse_input_nnz = int(sparse_input_nnz.item())
+        self.last_sparse_input_numel = int(sparse_input_numel.item())
+        self.last_input_density = (
+            float(self.last_sparse_input_nnz / self.last_sparse_input_numel)
+            if self.last_sparse_input_numel > 0
+            else 1.0
+        )
+        self.last_sparsification_overhead = float(sparsification_overhead.item())
 
         return output
 

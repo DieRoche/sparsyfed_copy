@@ -57,177 +57,11 @@ class ClientConfig(BaseModel):
 class Client(fl.client.NumPyClient):
     """Virtual client for ray."""
 
-    _SPARSE_SCAN_COST = 1.0
-    _SPARSE_INDEX_WRITE_COST = 1.0
-    _QUANTIZE_COST = 4.0
-    _DEQUANTIZE_COST = 2.0
-    _SPARSE_RECONSTRUCTION_COST = 1.0
-    _SERIALIZATION_FLOPS_PER_BIT = 1.0
-    _CSR_ROW_POINTER_BUILD_COST = 1.0
-    _CSR_SERVER_ROW_SCAN_COST = 1.0
-    _CSR_CLIENT_NNZ_GATHER_COST = 2.0
-    _CSR_SERVER_NNZ_SCATTER_COST = 2.0
-    _CSR_SERVER_NNZ_ACCUMULATE_COST = 1.0
     _PRUNE_EVENT_COST = 1.0
     _REGROW_EVENT_COST = 6.0
     _SIGN_FLIP_COST = 1.0
     _LAYER_OSCILLATION_COST = 4.0
 
-
-    def _estimate_communication_flops(
-        self,
-        server_nonzero_count: int,
-        client_nonzero_count: int,
-        total_param_count: int,
-        bits_per_parameter: int,
-        compress_uplink: bool,
-        compress_downlink: bool,
-        uplink_payload_bytes: int | None = None,
-        downlink_payload_bytes: int | None = None,
-    ) -> tuple[float, float, float]:
-        """Estimate client-side compression/decompression FLOPs.
-
-        Even when Flower transport is dense, clients still execute sparse
-        bookkeeping operations (scan active entries, build sparse index/value
-        views, and reconstruct parameters). This method tracks that workload as
-        communication-related FLOPs so it is not lost in round-level metrics.
-        """
-
-        if (
-            total_param_count <= 0
-            or server_nonzero_count < 0
-            or client_nonzero_count < 0
-            or bits_per_parameter <= 0
-        ):
-            return 0.0, 0.0, 0.0
-
-        compression_flops_clients = 0.0
-        if compress_uplink:
-            compression_scan_flops = self._SPARSE_SCAN_COST * float(total_param_count)
-            compression_sparse_create_flops = (
-                self._SPARSE_INDEX_WRITE_COST + self._QUANTIZE_COST
-            ) * float(client_nonzero_count)
-            dense_to_sparse_transform_flops = (
-                self._SPARSE_RECONSTRUCTION_COST * float(client_nonzero_count)
-            )
-            compression_flops_clients = (
-                compression_scan_flops
-                + compression_sparse_create_flops
-                + dense_to_sparse_transform_flops
-            )
-
-        decompression_flops_clients = 0.0
-        if compress_downlink:
-            decompression_flops_clients = (
-                self._DEQUANTIZE_COST + self._SPARSE_RECONSTRUCTION_COST
-            ) * float(server_nonzero_count)
-
-        uplink_bits = (
-            float(uplink_payload_bytes * 8)
-            if isinstance(uplink_payload_bytes, int) and uplink_payload_bytes > 0
-            else float(bits_per_parameter) * float(total_param_count)
-        )
-        downlink_bits = (
-            float(downlink_payload_bytes * 8)
-            if isinstance(downlink_payload_bytes, int) and downlink_payload_bytes > 0
-            else float(bits_per_parameter) * float(total_param_count)
-        )
-        serialization_flops = self._SERIALIZATION_FLOPS_PER_BIT * (
-            uplink_bits + downlink_bits
-        )
-
-        return (
-            float(compression_flops_clients),
-            float(decompression_flops_clients),
-            float(serialization_flops),
-        )
-
-    def _infer_parameter_bitwidth(self, parameters: NDArrays) -> int:
-        """Infer a representative floating-point bitwidth for serialization FLOPs.
-
-        Preference is given to floating-point tensors and weighted by tensor
-        size (number of elements) to avoid bias from small integer buffers such
-        as BatchNorm counters.
-        """
-
-        if not parameters:
-            return 0
-
-        floating_bitwidth_hist: dict[int, int] = {}
-        all_bitwidth_hist: dict[int, int] = {}
-        for parameter in parameters:
-            if isinstance(parameter, np.ndarray):
-                bitwidth = int(parameter.dtype.itemsize) * 8
-                if bitwidth <= 0:
-                    continue
-
-                numel = int(parameter.size)
-                all_bitwidth_hist[bitwidth] = (
-                    all_bitwidth_hist.get(bitwidth, 0) + numel
-                )
-                if np.issubdtype(parameter.dtype, np.floating):
-                    floating_bitwidth_hist[bitwidth] = (
-                        floating_bitwidth_hist.get(bitwidth, 0) + numel
-                    )
-
-        source_hist = (
-            floating_bitwidth_hist if floating_bitwidth_hist else all_bitwidth_hist
-        )
-        if not source_hist:
-            return 0
-
-        return max(source_hist, key=source_hist.get)
-
-    def _estimate_csr_transport_flops(
-        self,
-        encoded_arrays: list[np.ndarray],
-    ) -> tuple[float, float]:
-        """Estimate extra uplink CSR processing FLOPs (client compression + server decompression)."""
-        if not encoded_arrays:
-            return 0.0, 0.0
-
-        header_arr = encoded_arrays[0]
-        if not isinstance(header_arr, np.ndarray) or header_arr.dtype != np.uint8:
-            return 0.0, 0.0
-
-        try:
-            header = json.loads(header_arr.tobytes().decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            return 0.0, 0.0
-
-        entries = header.get("entries", [])
-        if not isinstance(entries, list):
-            return 0.0, 0.0
-
-        client_extra_flops = 0.0
-        server_extra_flops = 0.0
-        for entry in entries:
-            if not isinstance(entry, dict) or entry.get("scheme") != "csr":
-                continue
-
-            nnz = int(entry.get("nnz", 0))
-            matrix_shape = entry.get("matrix_shape", [])
-            rows = (
-                int(matrix_shape[0])
-                if isinstance(matrix_shape, list) and len(matrix_shape) >= 1
-                else 0
-            )
-            if nnz < 0 or rows < 0:
-                continue
-
-            # Base communication FLOPs already account for generic sparse
-            # bookkeeping. For CSR transport we still need dedicated
-            # row-pointer work plus nnz-dependent row traversal/scatter costs
-            # executed by the explicit CSR encode/decode pipeline.
-            client_extra_flops += self._CSR_ROW_POINTER_BUILD_COST * float(rows + 1)
-            client_extra_flops += self._CSR_CLIENT_NNZ_GATHER_COST * float(nnz)
-            server_extra_flops += self._CSR_SERVER_ROW_SCAN_COST * float(rows + 1)
-            server_extra_flops += (
-                self._CSR_SERVER_NNZ_SCATTER_COST
-                + self._CSR_SERVER_NNZ_ACCUMULATE_COST
-            ) * float(nnz)
-
-        return float(client_extra_flops), float(server_extra_flops)
 
     def _estimate_sparse_dynamics_flops(
         self,
@@ -392,7 +226,6 @@ class Client(fl.client.NumPyClient):
             client_nonzero_count, client_total_count = count_nonzero_elements(
                 updated_parameters
             )
-            bits_per_parameter = self._infer_parameter_bitwidth(updated_parameters)
 
             try:
                 num_batches = len(trainloader)
@@ -421,6 +254,10 @@ class Client(fl.client.NumPyClient):
             evaluation_flops = float(metrics.get("evaluation_flops", 0.0))
             aggregation_flops = float(metrics.get("aggregation_flops", 0.0))
             round_flops = training_flops + evaluation_flops + aggregation_flops
+            if round_flops <= 0.0:
+                legacy_round_flops = metrics.get("round_flops", 0.0)
+                if isinstance(legacy_round_flops, (float, int)):
+                    round_flops = float(legacy_round_flops)
 
             metrics["server_to_client_nonzero"] = float(server_nonzero_count)
             metrics["server_to_client_density"] = (
@@ -452,10 +289,6 @@ class Client(fl.client.NumPyClient):
             compress_uplink = bool(
                 transport_cfg.get("enabled", False)
                 and transport_cfg.get("compress_uplink", False)
-            )
-            compress_downlink = bool(
-                transport_cfg.get("enabled", False)
-                and transport_cfg.get("compress_downlink", False)
             )
 
             updates_dir_raw = config.extra.get("client_updates_dir")
@@ -509,52 +342,19 @@ class Client(fl.client.NumPyClient):
                     ),
                 )
                 metrics.update(transport_metrics)
-                (
-                    csr_compression_extra_flops,
-                    csr_decompression_server_extra_flops,
-                ) = self._estimate_csr_transport_flops(updated_parameters)
-                metrics["compression_flops_clients"] = float(
-                    metrics.get("compression_flops_clients", 0.0)
-                ) + csr_compression_extra_flops
-                metrics["decompression_flops_server"] = float(
-                    metrics.get("decompression_flops_server", 0.0)
-                ) + (
-                    csr_decompression_server_extra_flops
-                )
-                metrics["round_flops_compression"] = float(
-                    metrics.get("round_flops_compression", 0.0)
-                ) + (
-                    csr_compression_extra_flops
-                    + csr_decompression_server_extra_flops
-                )
-
-            (
-                compression_flops_clients,
-                decompression_flops_clients,
-                serialization_flops,
-            ) = self._estimate_communication_flops(
-                server_nonzero_count,
-                client_nonzero_count,
-                server_total_count,
-                bits_per_parameter,
-                compress_uplink=compress_uplink,
-                compress_downlink=compress_downlink,
-                uplink_payload_bytes=(
-                    int(metrics.get("upload_payload_bytes"))
-                    if isinstance(metrics.get("upload_payload_bytes"), (int, float))
-                    else None
-                ),
-                downlink_payload_bytes=None,
-            )
-            metrics["compression_flops_clients"] = compression_flops_clients + float(
+            metrics["compression_flops_clients"] = float(
                 metrics.get("compression_flops_clients", 0.0)
             )
-            metrics["compression_flops_server"] = 0.0
-            metrics["decompression_flops_clients"] = decompression_flops_clients
+            metrics["compression_flops_server"] = float(
+                metrics.get("compression_flops_server", 0.0)
+            )
+            metrics["decompression_flops_clients"] = float(
+                metrics.get("decompression_flops_clients", 0.0)
+            )
             metrics["decompression_flops_server"] = float(
                 metrics.get("decompression_flops_server", 0.0)
             )
-            metrics["serialization_flops"] = serialization_flops
+            metrics["serialization_flops"] = float(metrics.get("serialization_flops", 0.0))
             metrics["round_flops_compression"] = (
                 metrics["compression_flops_clients"]
                 + metrics["compression_flops_server"]

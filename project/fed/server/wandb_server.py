@@ -413,6 +413,8 @@ class WandbServer(Server):
             per_client_training_flops = (
                 float(training_flops) if isinstance(training_flops, Number) else 0.0
             )
+            if per_client_training_flops <= 0.0 and isinstance(round_flops, Number):
+                per_client_training_flops = float(round_flops)
             aggregation_flops = metrics.get("aggregation_flops")
             evaluation_flops = metrics.get("evaluation_flops")
             per_client_aggregation_flops = (

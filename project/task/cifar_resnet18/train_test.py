@@ -99,6 +99,7 @@ def train(  # pylint: disable=too-many-arguments
     )
 
     forward_flops_total = 0.0
+    optimizer_step_count = 0
     activation_density_samples: list[float] = []
     hooks = []
     def _hook(module: nn.Module, inputs: tuple[torch.Tensor, ...], output: torch.Tensor) -> None:
@@ -130,10 +131,14 @@ def train(  # pylint: disable=too-many-arguments
             num_correct += (output.max(1)[1] == target).clone().detach().sum().item()
             loss.backward()
             optimizer.step()
+            optimizer_step_count += 1
     for h in hooks:
         h.remove()
     sparse_backward_flops = forward_flops_total * 2.0
-    optimizer_flops = sum(float(p.numel()) for p in net.parameters() if p.requires_grad) * 2.0
+    optimizer_flops_per_step = (
+        sum(float(p.numel()) for p in net.parameters() if p.requires_grad) * 2.0
+    )
+    optimizer_flops = optimizer_flops_per_step * float(optimizer_step_count)
     training_flops = float(forward_flops_total + sparse_backward_flops + optimizer_flops)
 
     torch.cuda.empty_cache()

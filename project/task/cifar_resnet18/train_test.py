@@ -21,6 +21,7 @@ from project.fed.utils.utils import (
     estimate_module_forward_flops,
     generic_get_parameters,
     generic_set_parameters,
+    should_register_flop_hook,
 )
 from project.task.default.train_test import get_fed_eval_fn as get_default_fed_eval_fn
 from project.task.default.train_test import (
@@ -80,6 +81,8 @@ def _collect_training_flops(
         if isinstance(density, (float, int)):
             activation_density = float(max(0.0, min(1.0, density)))
             activation_density_samples.append(activation_density)
+            # Sparse-aware backward FLOPs are an estimate based on observed
+            # activation density saved for backward by sparse modules.
             sparse_backward_flops += layer_forward_flops * (1.0 + activation_density)
         else:
             sparse_backward_flops += layer_forward_flops * 2.0
@@ -88,11 +91,7 @@ def _collect_training_flops(
             sparsification_overhead += float(layer_overhead)
 
     for module in net.modules():
-        if (
-            isinstance(module, (nn.Conv2d, nn.Linear, nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d))
-            or (hasattr(module, "in_channels") and hasattr(module, "out_channels") and hasattr(module, "kernel_size"))
-            or (hasattr(module, "in_features") and hasattr(module, "out_features"))
-        ):
+        if should_register_flop_hook(module):
             hooks.append(module.register_forward_hook(_hook))
 
     final_epoch_per_sample_loss = 0.0
@@ -530,7 +529,7 @@ def test(
         nonlocal evaluation_flops
         evaluation_flops += estimate_module_forward_flops(module, inputs, output)
     for module in net.modules():
-        if isinstance(module, (nn.Conv2d, nn.Linear, nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
+        if should_register_flop_hook(module):
             hooks.append(module.register_forward_hook(_eval_hook))
     with torch.no_grad():
         for images, labels in testloader:

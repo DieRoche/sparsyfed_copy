@@ -271,6 +271,22 @@ def estimate_module_forward_flops(
     return 0.0
 
 
+def should_register_flop_hook(module: nn.Module) -> bool:
+    """Return whether a module should be included in FLOP hook collection."""
+    return bool(
+        isinstance(
+            module,
+            (nn.Conv2d, nn.Linear, nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d),
+        )
+        or (
+            hasattr(module, "in_channels")
+            and hasattr(module, "out_channels")
+            and hasattr(module, "kernel_size")
+        )
+        or (hasattr(module, "in_features") and hasattr(module, "out_features"))
+    )
+
+
 def get_initial_parameters(
     net_generator: NetGen,
     config: dict,

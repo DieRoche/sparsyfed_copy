@@ -68,6 +68,7 @@ class WandbServer(Server):
         }
         self._flop_metrics_available = False
         self._missing_flop_metrics_warned = False
+        self._fit_stage_flops_by_round: dict[int, dict[str, float]] = {}
 
     # pylint: disable=too-many-locals
     def fit(
@@ -167,9 +168,10 @@ class WandbServer(Server):
                     upload_traffic=float(upload_traffic),
                 )
 
-                self._update_flop_metrics(
-                    fit_results,
-                    fit_metrics,
+                self._update_fit_stage_flop_metrics(
+                    server_round=current_round,
+                    fit_results=fit_results,
+                    fit_metrics=fit_metrics,
                 )
 
                 if parameters_prime:
@@ -223,6 +225,26 @@ class WandbServer(Server):
                         server_round=current_round,
                         metrics=evaluate_metrics_fed,
                     )
+                if evaluate_metrics_fed is None:
+                    evaluate_metrics_fed = {}
+                self._finalize_round_flop_metrics(
+                    server_round=current_round,
+                    evaluate_metrics=evaluate_metrics_fed,
+                )
+                history.add_metrics_distributed_fit(
+                    server_round=current_round,
+                    metrics=evaluate_metrics_fed,
+                )
+            elif current_round in self._fit_stage_flops_by_round:
+                eval_only_metrics: dict[str, float] = {}
+                self._finalize_round_flop_metrics(
+                    server_round=current_round,
+                    evaluate_metrics=eval_only_metrics,
+                )
+                history.add_metrics_distributed_fit(
+                    server_round=current_round,
+                    metrics=eval_only_metrics,
+                )
 
             # Saver round parameters and files
             self.save_parameters_to_file(self.parameters)
@@ -348,8 +370,9 @@ class WandbServer(Server):
             return 0.0
         return float(active_clients * parameters_size_bytes(server_payload))
 
-    def _update_flop_metrics(
+    def _update_fit_stage_flop_metrics(
         self,
+        server_round: int,
         fit_results: list[tuple[ClientProxy, FitRes]],
         fit_metrics: dict[str, float | int | bool | str],
     ) -> None:
@@ -364,10 +387,8 @@ class WandbServer(Server):
         """
 
         round_values = {
-            "round_flops": 0.0,
             "training_flops": 0.0,
             "aggregation_flops": 0.0,
-            "evaluation_flops": 0.0,
             "compression_flops_clients": 0.0,
             "compression_flops_server": 0.0,
             "decompression_flops_clients": 0.0,
@@ -381,10 +402,8 @@ class WandbServer(Server):
             return float(value) if isinstance(value, Number) else 0.0
 
         existing_values = {
-            "round_flops": _metric_as_float("round_flops"),
             "training_flops": _metric_as_float("training_flops"),
             "aggregation_flops": _metric_as_float("aggregation_flops"),
-            "evaluation_flops": _metric_as_float("evaluation_flops"),
             "compression_flops_clients": _metric_as_float(
                 "compression_flops_clients"
             ),
@@ -422,11 +441,6 @@ class WandbServer(Server):
             per_client_aggregation_flops = (
                 float(aggregation_flops)
                 if isinstance(aggregation_flops, Number)
-                else 0.0
-            )
-            per_client_evaluation_flops = (
-                float(evaluation_flops)
-                if isinstance(evaluation_flops, Number)
                 else 0.0
             )
             per_client_serialization_flops = (
@@ -475,12 +489,6 @@ class WandbServer(Server):
             ):
                 per_client_decompression_flops_clients = float(legacy_decompression)
 
-            per_client_round_compute = (
-                per_client_training_flops
-                + per_client_aggregation_flops
-                + per_client_evaluation_flops
-            )
-
             per_client_round_compression = (
                 per_client_compression_flops_clients
                 + per_client_compression_flops_server
@@ -489,10 +497,8 @@ class WandbServer(Server):
                 + per_client_serialization_flops
             )
 
-            round_values["round_flops"] += per_client_round_compute
             round_values["training_flops"] += per_client_training_flops
             round_values["aggregation_flops"] += per_client_aggregation_flops
-            round_values["evaluation_flops"] += per_client_evaluation_flops
             round_values["compression_flops_clients"] += (
                 per_client_compression_flops_clients
             )
@@ -513,7 +519,6 @@ class WandbServer(Server):
                 for value in (
                     per_client_training_flops,
                     per_client_aggregation_flops,
-                    per_client_evaluation_flops,
                     per_client_compression_flops_clients,
                     per_client_compression_flops_server,
                     per_client_decompression_flops_clients,
@@ -523,7 +528,7 @@ class WandbServer(Server):
                 )
             )
 
-        if not values_found and existing_values["round_flops"] <= 0.0:
+        if not values_found and _metric_as_float("round_flops") <= 0.0:
             if not self._missing_flop_metrics_warned:
                 log(
                     INFO,
@@ -537,10 +542,11 @@ class WandbServer(Server):
                 self._missing_flop_metrics_warned = True
 
             zero_metrics: dict[str, float] = {
-                "round_flops": 0.0,
                 "training_flops": 0.0,
                 "aggregation_flops": 0.0,
                 "evaluation_flops": 0.0,
+                "fit_round_flops": 0.0,
+                "round_flops_without_evaluation": 0.0,
                 "compression_flops_clients": 0.0,
                 "compression_flops_server": 0.0,
                 "decompression_flops_clients": 0.0,
@@ -560,12 +566,6 @@ class WandbServer(Server):
             if merged_values[key] <= 0.0 and existing_value > 0.0:
                 merged_values[key] = existing_value
 
-        merged_values["round_flops"] = max(
-            merged_values["training_flops"]
-            + merged_values["aggregation_flops"]
-            + merged_values["evaluation_flops"],
-            merged_values["round_flops"],
-        )
         total_parameters = 0
         if fit_results:
             first_params = parameters_to_ndarrays(fit_results[0][1].parameters)
@@ -576,11 +576,12 @@ class WandbServer(Server):
             merged_values["aggregation_flops"],
             server_aggregation_flops,
         )
-        merged_values["round_flops"] = (
-            merged_values["training_flops"]
-            + merged_values["aggregation_flops"]
-            + merged_values["evaluation_flops"]
+        merged_values["fit_round_flops"] = (
+            merged_values["training_flops"] + merged_values["aggregation_flops"]
         )
+        merged_values["round_flops_without_evaluation"] = merged_values["fit_round_flops"]
+        merged_values["evaluation_flops"] = 0.0
+        merged_values["round_flops"] = merged_values["fit_round_flops"]
         merged_values["round_flops_compression"] = max(
             merged_values["compression_flops_clients"]
             + merged_values["compression_flops_server"]
@@ -592,22 +593,56 @@ class WandbServer(Server):
 
         fit_metrics.update(merged_values)
 
-        self._flop_totals["total_flops"] += merged_values["round_flops"]
-        self._flop_totals["total_flops_compression"] += merged_values[
-            "round_flops_compression"
-        ]
-        self._flop_totals["total_serialization_flops"] += merged_values[
-            "serialization_flops"
-        ]
-
         fit_metrics.pop("round_flops_decompression", None)
         fit_metrics.pop("total_flops_decompression", None)
         fit_metrics.pop("total_flops_including_compression", None)
 
         fit_metrics["total_flops"] = self._flop_totals["total_flops"]
-        fit_metrics["total_flops_compression"] = self._flop_totals[
-            "total_flops_compression"
-        ]
-        fit_metrics["total_serialization_flops"] = self._flop_totals[
-            "total_serialization_flops"
-        ]
+        fit_metrics["total_flops_compression"] = self._flop_totals["total_flops_compression"]
+        fit_metrics["total_serialization_flops"] = self._flop_totals["total_serialization_flops"]
+        self._fit_stage_flops_by_round[server_round] = {
+            key: float(fit_metrics.get(key, 0.0))
+            for key in (
+                "training_flops",
+                "aggregation_flops",
+                "fit_round_flops",
+                "round_flops_without_evaluation",
+                "compression_flops_clients",
+                "compression_flops_server",
+                "decompression_flops_clients",
+                "decompression_flops_server",
+                "serialization_flops",
+                "round_flops_compression",
+            )
+        }
+
+    def _finalize_round_flop_metrics(
+        self,
+        server_round: int,
+        evaluate_metrics: dict[str, float | int | bool | str],
+    ) -> None:
+        fit_values = self._fit_stage_flops_by_round.pop(server_round, None)
+        if fit_values is None:
+            return
+        evaluation_flops = evaluate_metrics.get("evaluation_flops", 0.0)
+        evaluation_total = float(evaluation_flops) if isinstance(evaluation_flops, Number) else 0.0
+        fit_round_flops = float(fit_values.get("fit_round_flops", 0.0))
+        round_flops = fit_round_flops + evaluation_total
+        evaluate_metrics["training_flops"] = float(fit_values["training_flops"])
+        evaluate_metrics["aggregation_flops"] = float(fit_values["aggregation_flops"])
+        evaluate_metrics["fit_round_flops"] = fit_round_flops
+        evaluate_metrics["round_flops_without_evaluation"] = float(fit_values["round_flops_without_evaluation"])
+        evaluate_metrics["evaluation_flops"] = evaluation_total
+        evaluate_metrics["round_flops"] = round_flops
+        evaluate_metrics["compression_flops_clients"] = float(fit_values["compression_flops_clients"])
+        evaluate_metrics["compression_flops_server"] = float(fit_values["compression_flops_server"])
+        evaluate_metrics["decompression_flops_clients"] = float(fit_values["decompression_flops_clients"])
+        evaluate_metrics["decompression_flops_server"] = float(fit_values["decompression_flops_server"])
+        evaluate_metrics["serialization_flops"] = float(fit_values["serialization_flops"])
+        evaluate_metrics["round_flops_compression"] = float(fit_values["round_flops_compression"])
+        self._flop_totals["total_flops"] += round_flops
+        self._flop_totals["total_flops_compression"] += float(fit_values["round_flops_compression"])
+        self._flop_totals["total_serialization_flops"] += float(fit_values["serialization_flops"])
+        evaluate_metrics["total_flops"] = self._flop_totals["total_flops"]
+        evaluate_metrics["total_flops_compression"] = self._flop_totals["total_flops_compression"]
+        evaluate_metrics["total_serialization_flops"] = self._flop_totals["total_serialization_flops"]

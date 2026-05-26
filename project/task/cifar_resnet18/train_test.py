@@ -55,6 +55,85 @@ class TrainConfig(BaseModel):
         arbitrary_types_allowed = True
 
 
+def _collect_training_flops(
+    net: nn.Module,
+    trainloader: DataLoader,
+    config: TrainConfig,
+    criterion: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    grad_mask: list[torch.Tensor] | None = None,
+) -> tuple[float, float, float, float]:
+    """Run training while collecting dense/sparse-aware FLOP metrics."""
+    forward_flops_total = 0.0
+    sparse_backward_flops = 0.0
+    sparsification_overhead = 0.0
+    optimizer_step_count = 0
+    activation_density_samples: list[float] = []
+
+    hooks = []
+
+    def _hook(module: nn.Module, inputs: tuple[torch.Tensor, ...], output: torch.Tensor) -> None:
+        nonlocal forward_flops_total, sparse_backward_flops, sparsification_overhead
+        layer_forward_flops = estimate_module_forward_flops(module, inputs, output)
+        forward_flops_total += layer_forward_flops
+        density = getattr(module, "last_input_density", None)
+        if isinstance(density, (float, int)):
+            activation_density = float(max(0.0, min(1.0, density)))
+            activation_density_samples.append(activation_density)
+            sparse_backward_flops += layer_forward_flops * (1.0 + activation_density)
+        else:
+            sparse_backward_flops += layer_forward_flops * 2.0
+        layer_overhead = getattr(module, "last_sparsification_overhead", None)
+        if isinstance(layer_overhead, (float, int)):
+            sparsification_overhead += float(layer_overhead)
+
+    for module in net.modules():
+        if (
+            isinstance(module, (nn.Conv2d, nn.Linear, nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d))
+            or (hasattr(module, "in_channels") and hasattr(module, "out_channels") and hasattr(module, "kernel_size"))
+            or (hasattr(module, "in_features") and hasattr(module, "out_features"))
+        ):
+            hooks.append(module.register_forward_hook(_hook))
+
+    final_epoch_per_sample_loss = 0.0
+    num_correct = 0.0
+    for _ in range(config.epochs):
+        final_epoch_per_sample_loss = 0.0
+        num_correct = 0.0
+        for data, target in trainloader:
+            data, target = data.to(config.device), target.to(config.device)
+            optimizer.zero_grad()
+            output = net(data)
+            loss = criterion(output, target)
+            final_epoch_per_sample_loss += loss.item()
+            num_correct += (output.max(1)[1] == target).clone().detach().sum().item()
+            loss.backward()
+            if grad_mask is not None:
+                with torch.no_grad():
+                    for param, m in zip(net.parameters(), grad_mask, strict=True):
+                        param.grad *= m.to(config.device)
+            optimizer.step()
+            optimizer_step_count += 1
+
+    for h in hooks:
+        h.remove()
+
+    optimizer_flops = (
+        sum(float(p.numel()) for p in net.parameters() if p.requires_grad)
+        * 2.0
+        * float(optimizer_step_count)
+    )
+    training_flops = float(
+        forward_flops_total + sparse_backward_flops + optimizer_flops + sparsification_overhead
+    )
+    avg_activation_density = (
+        sum(activation_density_samples) / len(activation_density_samples)
+        if activation_density_samples
+        else 0.0
+    )
+    return final_epoch_per_sample_loss, num_correct, training_flops, avg_activation_density
+
+
 def train(  # pylint: disable=too-many-arguments
     net: nn.Module,
     trainloader: DataLoader,
@@ -98,48 +177,13 @@ def train(  # pylint: disable=too-many-arguments
         weight_decay=0.001,
     )
 
-    forward_flops_total = 0.0
-    optimizer_step_count = 0
-    activation_density_samples: list[float] = []
-    hooks = []
-    def _hook(module: nn.Module, inputs: tuple[torch.Tensor, ...], output: torch.Tensor) -> None:
-        nonlocal forward_flops_total
-        forward_flops_total += estimate_module_forward_flops(module, inputs, output)
-        density = getattr(module, "last_input_density", None)
-        if isinstance(density, (float, int)):
-            activation_density_samples.append(float(density))
-    for module in net.modules():
-        if isinstance(module, (nn.Conv2d, nn.Linear, nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
-            hooks.append(module.register_forward_hook(_hook))
-
-    final_epoch_per_sample_loss = 0.0
-    num_correct = 0
-    for _ in range(config.epochs):
-        final_epoch_per_sample_loss = 0.0
-        num_correct = 0
-        for data, target in trainloader:
-            data, target = (
-                data.to(
-                    config.device,
-                ),
-                target.to(config.device),
-            )
-            optimizer.zero_grad()
-            output = net(data)
-            loss = criterion(output, target)
-            final_epoch_per_sample_loss += loss.item()
-            num_correct += (output.max(1)[1] == target).clone().detach().sum().item()
-            loss.backward()
-            optimizer.step()
-            optimizer_step_count += 1
-    for h in hooks:
-        h.remove()
-    sparse_backward_flops = forward_flops_total * 2.0
-    optimizer_flops_per_step = (
-        sum(float(p.numel()) for p in net.parameters() if p.requires_grad) * 2.0
+    final_epoch_per_sample_loss, num_correct, training_flops, avg_activation_density = _collect_training_flops(
+        net=net,
+        trainloader=trainloader,
+        config=config,
+        criterion=criterion,
+        optimizer=optimizer,
     )
-    optimizer_flops = optimizer_flops_per_step * float(optimizer_step_count)
-    training_flops = float(forward_flops_total + sparse_backward_flops + optimizer_flops)
 
     torch.cuda.empty_cache()
 
@@ -149,11 +193,7 @@ def train(  # pylint: disable=too-many-arguments
         ),
         "train_accuracy": float(num_correct) / len(cast(Sized, trainloader.dataset)),
         "training_flops": training_flops,
-        "avg_activation_input_density": (
-            sum(activation_density_samples) / len(activation_density_samples)
-            if activation_density_samples
-            else 0.0
-        ),
+        "avg_activation_input_density": avg_activation_density,
     }
 
 
@@ -206,38 +246,22 @@ def fixed_train(  # pylint: disable=too-many-arguments
         weight_decay=0.001,
     )
 
-    final_epoch_per_sample_loss = 0.0
-    num_correct = 0
-    for _ in range(config.epochs):
-        final_epoch_per_sample_loss = 0.0
-        num_correct = 0
-        for data, target in trainloader:
-            data, target = (
-                data.to(
-                    config.device,
-                ),
-                target.to(config.device),
-            )
-            optimizer.zero_grad()
-            output = net(data)
-            loss = criterion(output, target)
-            final_epoch_per_sample_loss += loss.item()
-            num_correct += (output.max(1)[1] == target).clone().detach().sum().item()
-            loss.backward()
-
-            # FLASH
-            # apply the mask to the gradients
-            with torch.no_grad():
-                for param, m in zip(net.parameters(), mask, strict=True):
-                    param.grad *= m.to(config.device)
-
-            optimizer.step()
+    final_epoch_per_sample_loss, num_correct, training_flops, avg_activation_density = _collect_training_flops(
+        net=net,
+        trainloader=trainloader,
+        config=config,
+        criterion=criterion,
+        optimizer=optimizer,
+        grad_mask=mask,
+    )
 
     return len(cast(Sized, trainloader.dataset)), {
         "train_loss": final_epoch_per_sample_loss / len(
             cast(Sized, trainloader.dataset)
         ),
         "train_accuracy": float(num_correct) / len(cast(Sized, trainloader.dataset)),
+        "training_flops": training_flops,
+        "avg_activation_input_density": avg_activation_density,
     }
 
 

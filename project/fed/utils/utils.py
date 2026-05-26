@@ -231,28 +231,40 @@ def estimate_forward_flops(
 def estimate_module_forward_flops(
     module: nn.Module, inputs: tuple[torch.Tensor, ...], output: torch.Tensor
 ) -> float:
-    """Estimate per-batch forward FLOPs for common dense layers."""
+    """Estimate per-batch forward FLOPs for dense and SparsyFed-like layers."""
     if not isinstance(output, torch.Tensor):
         return 0.0
-    if isinstance(module, nn.Conv2d) and output.ndim >= 4 and len(inputs) > 0:
-        inp = inputs[0]
-        if not isinstance(inp, torch.Tensor):
-            return 0.0
-        batch = int(inp.shape[0])
-        out_channels = int(module.out_channels)
+    inp = inputs[0] if len(inputs) > 0 else None
+
+    is_conv_like = isinstance(module, nn.Conv2d) or (
+        hasattr(module, "in_channels")
+        and hasattr(module, "out_channels")
+        and hasattr(module, "kernel_size")
+        and hasattr(module, "groups")
+    )
+    if is_conv_like and output.ndim >= 4 and isinstance(inp, torch.Tensor):
+        batch = int(inp.shape[0]) if inp.ndim > 0 else 1
+        out_channels = int(getattr(module, "out_channels"))
         out_h = int(output.shape[-2])
         out_w = int(output.shape[-1])
-        in_channels = int(module.in_channels)
-        groups = max(int(module.groups), 1)
-        kernel_ops = int(module.kernel_size[0]) * int(module.kernel_size[1])
+        in_channels = int(getattr(module, "in_channels"))
+        groups = max(int(getattr(module, "groups", 1)), 1)
+        kernel_size = getattr(module, "kernel_size", (1, 1))
+        if isinstance(kernel_size, int):
+            k_h = k_w = int(kernel_size)
+        else:
+            k_h, k_w = int(kernel_size[0]), int(kernel_size[1])
+        kernel_ops = k_h * k_w
         macs = batch * out_channels * out_h * out_w * (in_channels // groups) * kernel_ops
         return float(2 * macs)
-    if isinstance(module, nn.Linear) and len(inputs) > 0:
-        inp = inputs[0]
-        if not isinstance(inp, torch.Tensor):
-            return 0.0
+
+    is_linear_like = isinstance(module, nn.Linear) or (
+        hasattr(module, "in_features") and hasattr(module, "out_features")
+    )
+    if is_linear_like and isinstance(inp, torch.Tensor):
         batch = int(inp.shape[0]) if inp.ndim > 1 else 1
-        return float(2 * batch * int(module.in_features) * int(module.out_features))
+        return float(2 * batch * int(getattr(module, "in_features")) * int(getattr(module, "out_features")))
+
     if isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
         numel = int(output.numel())
         return float(4 * numel)

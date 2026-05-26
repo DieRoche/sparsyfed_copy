@@ -15,6 +15,9 @@ gpus_per_client: 0.5
 
 # Seed for client selection
 seed: 9421
+# Keep false to randomize selected clients in each execution.
+# Set true to reproduce the exact sampled clients for a given seed.
+deterministic_client_sampling: false
 
 # Settings for loading the initial parameters 
 # used by the server

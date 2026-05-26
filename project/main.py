@@ -9,6 +9,7 @@ poetry run python -m project.main --config-name=cifar
 import json
 import logging
 import os
+import secrets
 import subprocess
 import sys
 from pathlib import Path
@@ -138,9 +139,19 @@ def main(cfg: DictConfig) -> None:
                 cfg.save_frequency,
             )
 
-            # For checkpointed runs, adjust the seed
-            # so different clients are sampled
-            adjusted_seed = cfg.fed.seed ^ fs_manager.checkpoint_index
+            # For checkpointed runs, adjust the seed so different clients are sampled.
+            # Default behavior is non-deterministic sampling across repeated runs.
+            if cfg.fed.deterministic_client_sampling:
+                adjusted_seed = cfg.fed.seed ^ fs_manager.checkpoint_index
+            else:
+                # Keep in NumPy legacy seed bounds [0, 2**32 - 1]
+                # because this value is also passed to seed_everything().
+                adjusted_seed = secrets.randbelow(2**32)
+                log(
+                    logging.INFO,
+                    "Using non-deterministic client selection seed: %s",
+                    adjusted_seed,
+                )
 
             save_parameters_to_file = get_save_parameters_to_file(working_dir)
 

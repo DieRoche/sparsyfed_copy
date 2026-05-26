@@ -17,7 +17,11 @@ from torch.utils.data import DataLoader
 
 from torch.nn.utils import prune
 
-from project.fed.utils.utils import generic_get_parameters, generic_set_parameters
+from project.fed.utils.utils import (
+    estimate_module_forward_flops,
+    generic_get_parameters,
+    generic_set_parameters,
+)
 from project.task.default.train_test import get_fed_eval_fn as get_default_fed_eval_fn
 from project.task.default.train_test import (
     get_on_evaluate_config_fn as get_default_on_evaluate_config_fn,
@@ -94,6 +98,20 @@ def train(  # pylint: disable=too-many-arguments
         weight_decay=0.001,
     )
 
+    forward_flops_total = 0.0
+    optimizer_step_count = 0
+    activation_density_samples: list[float] = []
+    hooks = []
+    def _hook(module: nn.Module, inputs: tuple[torch.Tensor, ...], output: torch.Tensor) -> None:
+        nonlocal forward_flops_total
+        forward_flops_total += estimate_module_forward_flops(module, inputs, output)
+        density = getattr(module, "last_input_density", None)
+        if isinstance(density, (float, int)):
+            activation_density_samples.append(float(density))
+    for module in net.modules():
+        if isinstance(module, (nn.Conv2d, nn.Linear, nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
+            hooks.append(module.register_forward_hook(_hook))
+
     final_epoch_per_sample_loss = 0.0
     num_correct = 0
     for _ in range(config.epochs):
@@ -113,6 +131,15 @@ def train(  # pylint: disable=too-many-arguments
             num_correct += (output.max(1)[1] == target).clone().detach().sum().item()
             loss.backward()
             optimizer.step()
+            optimizer_step_count += 1
+    for h in hooks:
+        h.remove()
+    sparse_backward_flops = forward_flops_total * 2.0
+    optimizer_flops_per_step = (
+        sum(float(p.numel()) for p in net.parameters() if p.requires_grad) * 2.0
+    )
+    optimizer_flops = optimizer_flops_per_step * float(optimizer_step_count)
+    training_flops = float(forward_flops_total + sparse_backward_flops + optimizer_flops)
 
     torch.cuda.empty_cache()
 
@@ -121,6 +148,12 @@ def train(  # pylint: disable=too-many-arguments
             cast(Sized, trainloader.dataset)
         ),
         "train_accuracy": float(num_correct) / len(cast(Sized, trainloader.dataset)),
+        "training_flops": training_flops,
+        "avg_activation_input_density": (
+            sum(activation_density_samples) / len(activation_density_samples)
+            if activation_density_samples
+            else 0.0
+        ),
     }
 
 
@@ -467,6 +500,14 @@ def test(
     criterion = nn.CrossEntropyLoss()
     correct, per_sample_loss = 0, 0.0
 
+    evaluation_flops = 0.0
+    hooks = []
+    def _eval_hook(module: nn.Module, inputs: tuple[torch.Tensor, ...], output: torch.Tensor) -> None:
+        nonlocal evaluation_flops
+        evaluation_flops += estimate_module_forward_flops(module, inputs, output)
+    for module in net.modules():
+        if isinstance(module, (nn.Conv2d, nn.Linear, nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
+            hooks.append(module.register_forward_hook(_eval_hook))
     with torch.no_grad():
         for images, labels in testloader:
             images, labels = (
@@ -482,6 +523,9 @@ def test(
             ).item()
             _, predicted = torch.max(outputs.data, 1)
             correct += (predicted == labels).sum().item()
+            evaluation_flops += float(labels.shape[0] * (1 + int(outputs.shape[-1])))
+    for h in hooks:
+        h.remove()
 
     sparse_accuracy["test_accuracy"] = float(correct) / len(
         cast(Sized, testloader.dataset)
@@ -543,7 +587,7 @@ def test(
     return (
         sparse_loss["loss"],
         len(cast(Sized, testloader.dataset)),
-        sparse_accuracy,
+        {**sparse_accuracy, "evaluation_flops": float(evaluation_flops)},
     )
 
 

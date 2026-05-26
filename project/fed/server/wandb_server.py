@@ -409,9 +409,12 @@ class WandbServer(Server):
             legacy_compression = metrics.get("round_flops_compression")
             legacy_decompression = metrics.get("round_flops_decompression")
 
+            training_flops = metrics.get("training_flops")
             per_client_training_flops = (
-                float(round_flops) if isinstance(round_flops, Number) else 0.0
+                float(training_flops) if isinstance(training_flops, Number) else 0.0
             )
+            if per_client_training_flops <= 0.0 and isinstance(round_flops, Number):
+                per_client_training_flops = float(round_flops)
             aggregation_flops = metrics.get("aggregation_flops")
             evaluation_flops = metrics.get("evaluation_flops")
             per_client_aggregation_flops = (
@@ -561,6 +564,20 @@ class WandbServer(Server):
             + merged_values["evaluation_flops"],
             merged_values["round_flops"],
         )
+        total_parameters = 0
+        if fit_results:
+            first_params = parameters_to_ndarrays(fit_results[0][1].parameters)
+            total_parameters = sum(int(arr.size) for arr in first_params)
+        server_aggregation_flops = float(total_parameters * len(fit_results))
+        merged_values["aggregation_flops"] = max(
+            merged_values["aggregation_flops"],
+            server_aggregation_flops,
+        )
+        merged_values["round_flops"] = (
+            merged_values["training_flops"]
+            + merged_values["aggregation_flops"]
+            + merged_values["evaluation_flops"]
+        )
         merged_values["round_flops_compression"] = max(
             merged_values["compression_flops_clients"]
             + merged_values["compression_flops_server"]
@@ -579,7 +596,6 @@ class WandbServer(Server):
         self._flop_totals["total_serialization_flops"] += merged_values[
             "serialization_flops"
         ]
-        self._flop_totals["total_flops"] += merged_values["round_flops_compression"]
 
         fit_metrics.pop("round_flops_decompression", None)
         fit_metrics.pop("total_flops_decompression", None)

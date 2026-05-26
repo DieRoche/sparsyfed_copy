@@ -194,8 +194,11 @@ class SparsyFedLinear(nn.Module):
                 torch.abs(self.weight), self.alpha
             )
 
+        rng_state = torch.random.get_rng_state() if self.training else None
         output, applied_sparsity = self._call_sparsyfed_linear(input, sparsyfed_weight)
         with torch.no_grad():
+            if self.training and rng_state is not None:
+                torch.random.set_rng_state(rng_state)
             sparse_input = matrix_drop(input, max(1 - float(applied_sparsity), 1e-7))
             nnz = int(torch.count_nonzero(sparse_input).item())
             numel = int(sparse_input.numel())

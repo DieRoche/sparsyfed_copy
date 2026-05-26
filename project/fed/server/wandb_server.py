@@ -6,6 +6,7 @@ from logging import INFO
 from numbers import Number
 
 from flwr.common import FitRes, Parameters
+from flwr.common.parameter import parameters_to_ndarrays
 from flwr.common.logger import log
 from flwr.server import Server
 from flwr.server.client_manager import ClientManager
@@ -14,6 +15,7 @@ from flwr.server.history import History
 from flwr.server.strategy import Strategy
 
 from project.fed.utils.traffic import parameters_size_bytes
+from project.fed.compression.sparse_transport import decode_sparse_transport_if_needed
 from project.utils.utils import cleanup_memory
 
 
@@ -567,7 +569,8 @@ class WandbServer(Server):
         total_parameters = 0
         if fit_results:
             first_params = parameters_to_ndarrays(fit_results[0][1].parameters)
-            total_parameters = sum(int(arr.size) for arr in first_params)
+            decoded_params = decode_sparse_transport_if_needed(first_params)
+            total_parameters = sum(int(arr.size) for arr in decoded_params)
         server_aggregation_flops = float(total_parameters * len(fit_results))
         merged_values["aggregation_flops"] = max(
             merged_values["aggregation_flops"],

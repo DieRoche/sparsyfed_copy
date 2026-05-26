@@ -228,6 +228,37 @@ def estimate_forward_flops(
     return float(total_flops / batch_size) if total_flops > 0.0 else 0.0
 
 
+def estimate_module_forward_flops(
+    module: nn.Module, inputs: tuple[torch.Tensor, ...], output: torch.Tensor
+) -> float:
+    """Estimate per-batch forward FLOPs for common dense layers."""
+    if not isinstance(output, torch.Tensor):
+        return 0.0
+    if isinstance(module, nn.Conv2d) and output.ndim >= 4 and len(inputs) > 0:
+        inp = inputs[0]
+        if not isinstance(inp, torch.Tensor):
+            return 0.0
+        batch = int(inp.shape[0])
+        out_channels = int(module.out_channels)
+        out_h = int(output.shape[-2])
+        out_w = int(output.shape[-1])
+        in_channels = int(module.in_channels)
+        groups = max(int(module.groups), 1)
+        kernel_ops = int(module.kernel_size[0]) * int(module.kernel_size[1])
+        macs = batch * out_channels * out_h * out_w * (in_channels // groups) * kernel_ops
+        return float(2 * macs)
+    if isinstance(module, nn.Linear) and len(inputs) > 0:
+        inp = inputs[0]
+        if not isinstance(inp, torch.Tensor):
+            return 0.0
+        batch = int(inp.shape[0]) if inp.ndim > 1 else 1
+        return float(2 * batch * int(module.in_features) * int(module.out_features))
+    if isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
+        numel = int(output.numel())
+        return float(4 * numel)
+    return 0.0
+
+
 def get_initial_parameters(
     net_generator: NetGen,
     config: dict,

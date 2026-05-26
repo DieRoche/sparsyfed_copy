@@ -16,13 +16,7 @@ import torch
 from torch import nn
 
 from project.fed.compression.sparse_transport import encode_sparse_transport
-from project.fed.utils.utils import (
-    count_nonzero_elements,
-    estimate_forward_flops,
-    generic_get_parameters,
-    generic_set_parameters,
-    get_nonzeros,
-)
+from project.fed.utils.utils import count_nonzero_elements, generic_get_parameters, generic_set_parameters, get_nonzeros
 
 from project.types.common import (
     ClientDataloaderGen,
@@ -63,9 +57,6 @@ class ClientConfig(BaseModel):
 class Client(fl.client.NumPyClient):
     """Virtual client for ray."""
 
-    _BACKWARD_MULTIPLIER = 2.0
-    _OPTIMIZER_COST = 2.0
-    _FLOP_SAMPLE_SHAPE = (128, 3, 32, 32)
     _SPARSE_SCAN_COST = 1.0
     _SPARSE_INDEX_WRITE_COST = 1.0
     _QUANTIZE_COST = 4.0
@@ -82,135 +73,6 @@ class Client(fl.client.NumPyClient):
     _SIGN_FLIP_COST = 1.0
     _LAYER_OSCILLATION_COST = 4.0
 
-    def _get_dense_forward_flops(
-        self,
-        device: torch.device,
-    ) -> float:
-        """Return (and cache) per-sample dense forward FLOPs for the model."""
-
-        if self.net is None:
-            return 0.0
-
-        if (
-            self._dense_forward_flops_per_sample is not None
-            and self._dense_forward_flops_device == device.type
-        ):
-            return self._dense_forward_flops_per_sample
-
-        first_param = next(self.net.parameters(), None)
-        if first_param is None:
-            return 0.0
-
-        dtype = first_param.dtype
-        sample_input = torch.randn(
-            self._FLOP_SAMPLE_SHAPE,
-            device=device,
-            dtype=dtype,
-        )
-        flops = estimate_forward_flops(self.net, sample_input, device)
-        if flops <= 0.0:
-            return 0.0
-
-        self._dense_forward_flops_per_sample = flops
-        self._dense_forward_flops_device = device.type
-        return flops
-
-    def _estimate_round_flops(
-        self,
-        num_samples: int,
-        num_batches: int,
-        batch_size: int,
-        epochs: int,
-        server_nonzero_count: int,
-        client_nonzero_count: int,
-        total_param_count: int,
-        device: torch.device,
-        server_parameters: NDArrays | None = None,
-        client_parameters: NDArrays | None = None,
-    ) -> float:
-        """Estimate the floating-point operations executed during local training.
-
-        The estimate uses a dense forward-pass FLOP profile scaled by the
-        effective density of the sparse parameters. The forward cost is inflated
-        by ``1 + _BACKWARD_MULTIPLIER`` to approximate the backward pass and an
-        additional optimizer cost is included for the active parameters. The
-        resulting per-step cost is multiplied by the number of steps per epoch
-        and by the number of epochs processed in the round.
-        """
-
-        if (
-            epochs <= 0
-            or batch_size <= 0
-            or total_param_count <= 0
-            or server_nonzero_count < 0
-            or client_nonzero_count < 0
-        ):
-            return 0.0
-
-        steps_per_epoch = 0
-        if num_samples > 0 and batch_size > 0:
-            steps_per_epoch = max(math.ceil(num_samples / batch_size), 1)
-        elif num_batches > 0:
-            steps_per_epoch = num_batches
-
-        if steps_per_epoch <= 0:
-            return 0.0
-
-        avg_active_params = (
-            float(server_nonzero_count) + float(client_nonzero_count)
-        ) / 2.0
-        if avg_active_params <= 0.0:
-            return 0.0
-
-        dense_forward_flops = self._get_dense_forward_flops(device)
-        if dense_forward_flops <= 0.0:
-            return 0.0
-
-        sparse_forward_flops = 0.0
-        if (
-            isinstance(server_parameters, list)
-            and isinstance(client_parameters, list)
-            and len(server_parameters) == len(client_parameters)
-            and len(server_parameters) > 0
-        ):
-            total_layer_params = float(
-                sum(int(arr.size) for arr in server_parameters if isinstance(arr, np.ndarray))
-            )
-            if total_layer_params > 0.0:
-                for server_arr, client_arr in zip(
-                    server_parameters,
-                    client_parameters,
-                    strict=False,
-                ):
-                    if (
-                        not isinstance(server_arr, np.ndarray)
-                        or not isinstance(client_arr, np.ndarray)
-                        or server_arr.shape != client_arr.shape
-                        or server_arr.size <= 0
-                    ):
-                        continue
-                    layer_param_count = float(server_arr.size)
-                    dense_layer_flops = (
-                        dense_forward_flops * (layer_param_count / total_layer_params)
-                    )
-                    layer_active = (
-                        float(np.count_nonzero(server_arr))
-                        + float(np.count_nonzero(client_arr))
-                    ) / 2.0
-                    layer_density = min(max(layer_active / layer_param_count, 0.0), 1.0)
-                    sparse_forward_flops += dense_layer_flops * layer_density
-
-        if sparse_forward_flops <= 0.0:
-            density = min(max(avg_active_params / float(total_param_count), 0.0), 1.0)
-            sparse_forward_flops = density * dense_forward_flops
-
-        forward_backward_flops = (
-            batch_size * sparse_forward_flops * (1.0 + self._BACKWARD_MULTIPLIER)
-        )
-        optimizer_flops = self._OPTIMIZER_COST * avg_active_params
-        per_step_flops = forward_backward_flops + optimizer_flops
-
-        return float(epochs * steps_per_epoch * per_step_flops)
 
     def _estimate_communication_flops(
         self,
@@ -471,8 +333,6 @@ class Client(fl.client.NumPyClient):
         self.train = train
         self.test = test
         self.fed_dataloader_gen = fed_dataloader_gen
-        self._dense_forward_flops_per_sample: float | None = None
-        self._dense_forward_flops_device: str | None = None
 
     def fit(
         self,
@@ -557,20 +417,10 @@ class Client(fl.client.NumPyClient):
                     1,
                 )
 
-            epochs = int(config.run_config.get("epochs", 1))
-            device = torch.device(config.run_config["device"])
-            round_flops = self._estimate_round_flops(
-                int(num_samples),
-                num_batches,
-                int(loader_batch_size),
-                epochs,
-                server_nonzero_count,
-                client_nonzero_count,
-                server_total_count,
-                device,
-                server_parameters=parameters,
-                client_parameters=updated_parameters,
-            )
+            training_flops = float(metrics.get("training_flops", 0.0))
+            evaluation_flops = float(metrics.get("evaluation_flops", 0.0))
+            aggregation_flops = float(metrics.get("aggregation_flops", 0.0))
+            round_flops = training_flops + evaluation_flops + aggregation_flops
 
             metrics["server_to_client_nonzero"] = float(server_nonzero_count)
             metrics["server_to_client_density"] = (
@@ -595,7 +445,6 @@ class Client(fl.client.NumPyClient):
                     )
                 )
                 metrics["sparsity_dynamics_flops"] = dynamics_flops
-                metrics["round_flops"] += dynamics_flops
                 metrics.update(per_layer_dynamics_flops)
             else:
                 metrics["sparsity_dynamics_flops"] = 0.0

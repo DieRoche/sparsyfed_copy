@@ -13,7 +13,7 @@ import secrets
 import subprocess
 import sys
 from pathlib import Path
-from typing import cast
+from typing import Union, cast
 
 import flwr as fl
 import hydra
@@ -43,6 +43,26 @@ from project.utils.utils import (
     RayContextManager,
     seed_everything,
     wandb_init,
+)
+
+
+def _format_sparsity_for_run_name(sparsity: Union[float, int, str]) -> str:
+    """Format sparsity for compact run names.
+
+    Sparsity is commonly configured as a fraction (for example ``0.90``),
+    while run names use percentages (``90``). Values greater than ``1`` are
+    treated as already being percentages.
+    """
+    sparsity_value = float(sparsity)
+    if sparsity_value <= 1:
+        sparsity_value *= 100
+    return f"{sparsity_value:g}"
+
+
+OmegaConf.register_new_resolver(
+    "sparsity_pct",
+    _format_sparsity_for_run_name,
+    replace=True,
 )
 
 

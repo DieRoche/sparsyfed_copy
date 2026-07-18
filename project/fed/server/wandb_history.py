@@ -4,13 +4,39 @@ Metrics are collected only at the central server, minimizing communication costs
 collection only happens if wandb is turned on.
 """
 
-from flwr.common.typing import Scalar
+from typing import Any, TypeAlias
+
 from flwr.server.history import History
 
 import wandb
 
+Scalar: TypeAlias = Any
 
-EXCLUDED_METRICS = {"train_loss", "train_accuracy", "sparsity"}
+WANDB_METRIC_ALLOWLIST = {
+    "compression_flops_clients",
+    "decompression_flops_clients",
+    "round_flops",
+    "compression_flops_server",
+    "decompression_flops_server",
+    "acc_servers_highest",
+    "overall_traffic",
+    "upload_traffic",
+    "download_traffic",
+}
+
+
+def filter_wandb_metrics(metrics: dict[str, Scalar]) -> dict[str, Scalar]:
+    """Return a new W&B payload containing only allowlisted metrics."""
+    return {
+        key: value for key, value in metrics.items() if key in WANDB_METRIC_ALLOWLIST
+    }
+
+
+def log_wandb_metrics(metrics: dict[str, Scalar], server_round: int) -> None:
+    """Log a filtered metric payload to W&B when at least one metric remains."""
+    wandb_metrics = filter_wandb_metrics(metrics)
+    if wandb_metrics:
+        wandb.log(wandb_metrics, step=server_round)
 
 
 class WandbHistory(History):
@@ -53,10 +79,7 @@ class WandbHistory(History):
         """
         super().add_loss_distributed(server_round, loss)
         if self.use_wandb:
-            wandb.log(
-                {"distributed_loss": loss},
-                step=server_round,
-            )
+            log_wandb_metrics({"distributed_loss": loss}, server_round)
 
     def add_loss_centralized(
         self,
@@ -78,10 +101,7 @@ class WandbHistory(History):
         """
         super().add_loss_centralized(server_round, loss)
         if self.use_wandb:
-            wandb.log(
-                {"training_loss_highest": loss},
-                step=server_round,
-            )
+            log_wandb_metrics({"training_loss_highest": loss}, server_round)
 
     def add_metrics_distributed_fit(
         self,
@@ -106,13 +126,7 @@ class WandbHistory(History):
             metrics,
         )
         if self.use_wandb:
-            for key in metrics:
-                if key in EXCLUDED_METRICS:
-                    continue
-                wandb.log(
-                    {key: metrics[key]},
-                    step=server_round,
-                )
+            log_wandb_metrics(metrics, server_round)
 
     def add_metrics_distributed(
         self,
@@ -137,17 +151,11 @@ class WandbHistory(History):
             metrics,
         )
         if self.use_wandb:
-            for key in metrics:
-                if key in EXCLUDED_METRICS:
-                    continue
-                if key == "test_accuracy":
-                    key_name = "distributed_test_accuracy"
-                else:
-                    key_name = key
-                wandb.log(
-                    {key_name: metrics[key]},
-                    step=server_round,
-                )
+            wandb_metrics = {
+                "distributed_test_accuracy" if key == "test_accuracy" else key: value
+                for key, value in metrics.items()
+            }
+            log_wandb_metrics(wandb_metrics, server_round)
 
     def add_metrics_centralized(
         self,
@@ -172,14 +180,8 @@ class WandbHistory(History):
             metrics,
         )
         if self.use_wandb:
-            for key in metrics:
-                if key in EXCLUDED_METRICS:
-                    continue
-                if key == "test_accuracy":
-                    key_name = "acc_servers_highest"
-                else:
-                    key_name = key
-                wandb.log(
-                    {key_name: metrics[key]},
-                    step=server_round,
-                )
+            wandb_metrics = {
+                "acc_servers_highest" if key == "test_accuracy" else key: value
+                for key, value in metrics.items()
+            }
+            log_wandb_metrics(wandb_metrics, server_round)

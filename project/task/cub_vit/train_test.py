@@ -28,8 +28,8 @@ from project.task.default.train_test import (
 from torch.nn.utils import prune
 import wandb
 
+from project.fed.server.wandb_history import filter_wandb_metrics
 from project.utils.model_diagnostics import analyze_model_integrity
-
 
 # class TrainConfig(BaseModel):
 #     """Training configuration."""
@@ -238,13 +238,17 @@ def train_local_log(
             batch_accuracy = batch_correct / len(target)
 
             # Log batch metrics to W&B
-            wandb.log({
-                "batch": batch_idx + epoch * len(trainloader),
-                "batch_loss": batch_loss,
-                "batch_accuracy": batch_accuracy,
-                "learning_rate": optimizer.param_groups[0]["lr"],
-                "epoch": epoch,
-            })
+            wandb_metrics = filter_wandb_metrics(
+                {
+                    "batch": batch_idx + epoch * len(trainloader),
+                    "batch_loss": batch_loss,
+                    "batch_accuracy": batch_accuracy,
+                    "learning_rate": optimizer.param_groups[0]["lr"],
+                    "epoch": epoch,
+                }
+            )
+            if wandb_metrics:
+                wandb.log(wandb_metrics)
 
             if batch_idx % 10 == 0:
                 log(
@@ -259,11 +263,15 @@ def train_local_log(
         epoch_accuracy = num_correct / total_samples
 
         # Log epoch metrics to W&B
-        wandb.log({
-            "epoch_loss": final_epoch_loss,
-            "epoch_accuracy": epoch_accuracy,
-            "epoch": epoch,
-        })
+        wandb_metrics = filter_wandb_metrics(
+            {
+                "epoch_loss": final_epoch_loss,
+                "epoch_accuracy": epoch_accuracy,
+                "epoch": epoch,
+            }
+        )
+        if wandb_metrics:
+            wandb.log(wandb_metrics)
 
         log(
             logging.INFO,

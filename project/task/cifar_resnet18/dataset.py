@@ -2,8 +2,9 @@
 
 from pathlib import Path
 
+import numpy as np
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 
 from project.task.default.dataset import (
     ClientDataloaderConfig as DefaultClientDataloaderConfig,
@@ -18,6 +19,36 @@ from project.types.common import ClientDataloaderGen, FedDataloaderGen
 # Requires only batch size
 ClientDataloaderConfig = DefaultClientDataloaderConfig
 FedDataloaderConfig = DefaultFedDataloaderConfig
+
+
+class _ArrayDataset(Dataset):
+    """Lightweight dataset wrapping array-like data and targets."""
+
+    def __init__(self, data, targets) -> None:
+        if len(data) != len(targets):
+            raise ValueError(
+                "Data and targets must have the same length.",
+            )
+        self._data = data
+        self._targets = targets
+
+    def __len__(self) -> int:
+        return len(self._targets)
+
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
+        return self._to_tensor(self._data[index]), self._to_tensor(
+            self._targets[index],
+        )
+
+    @staticmethod
+    def _to_tensor(item) -> torch.Tensor:
+        if isinstance(item, torch.Tensor):
+            return item
+        if isinstance(item, np.ndarray):
+            return torch.from_numpy(item)
+        if isinstance(item, np.generic):
+            return torch.tensor(item.item())
+        return torch.as_tensor(item)
 
 
 def get_dataloader_generators(
@@ -65,12 +96,12 @@ def get_dataloader_generators(
 
         client_dir = partition_dir / f"client_{cid}"
         if not test:
-            dataset = torch.load(client_dir / "train.pt")
+            dataset = torch.load(client_dir / "train.pt", weights_only=False)
         else:
-            dataset = torch.load(client_dir / "test.pt")
+            dataset = torch.load(client_dir / "test.pt", weights_only=False)
 
         dataset_loader = DataLoader(
-            list(zip(dataset["data"], dataset["targets"], strict=True)),
+            _ArrayDataset(dataset["data"], dataset["targets"]),
             batch_size=config.batch_size,
             shuffle=not test,
         )
@@ -102,13 +133,13 @@ def get_dataloader_generators(
 
         if not test:
             return DataLoader(
-                torch.load(partition_dir / "train.pt"),
+                torch.load(partition_dir / "train.pt", weights_only=False),
                 batch_size=config.batch_size,
                 shuffle=not test,
             )
 
         return DataLoader(
-            torch.load(partition_dir / "test.pt"),
+            torch.load(partition_dir / "test.pt", weights_only=False),
             batch_size=config.batch_size,
             shuffle=not test,
         )
